@@ -6,7 +6,7 @@ import torch.nn as nn
 
 from .components import FromRGB, DBlock, minibatch_stddev_layer, Layer, Dense_layer
 
-class G_main(nn.Module):
+class Generator(nn.Module):
     def __init__(
             self,
             latent_size, label_size, resolution,
@@ -16,8 +16,9 @@ class G_main(nn.Module):
             dlatent_avg_beta=0.995,
             mapping_network='G_mapping',
             synthesis_netowrk='G_synthesis_stylegan2',
+            skeleton_channel=0,
             **kwargs):
-        super(G_main, self).__init__()
+        super(Generator, self).__init__()
         
         # assert is_training is not None
         # if is_training:
@@ -30,7 +31,10 @@ class G_main(nn.Module):
         self.resolution_log2 = int(np.log2(resolution))
         self.num_layers = self.resolution_log2 * 2 - 2
         assert resolution == 2**self.resolution_log2 and resolution >= 4
-        
+        if skeleton_channel > 0:
+            assert skeleton_channel in [1, 3]
+            self.use_skeleton = True
+            self.skeleton_channel = skeleton_channel
         self.return_dlatents = return_dlatents
         
         # Define arch. of components
@@ -52,7 +56,7 @@ class G_main(nn.Module):
         # style mixing
         if len(latents_in) == 2:
             idx = random.randint(1, self.num_layers - 1)
-            inject_index = [idx, self.num_layers - idx]
+            inject_index = [idx, self.num_layers - idx] ## name confusing
             dlatents = [self.mapping_network(l, labels_in, dlatent_broadcast=i)
                         for l, i in zip(latents_in, inject_index)]
             dlatents = torch.cat(dlatents, dim=1)

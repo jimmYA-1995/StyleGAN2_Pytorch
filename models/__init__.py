@@ -1,1 +1,1 @@
-from .models import G_main, Discriminator
+from .models import Generator, Discriminator
