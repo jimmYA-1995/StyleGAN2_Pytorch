@@ -3,8 +3,11 @@ test/
 data/
 *.png
 sample/
+results/
 checkpoint/
 wandb/
+try*
+test*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
