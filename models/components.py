@@ -348,7 +348,7 @@ class Layer(nn.Module):
         
         
 class ToRGB(nn.Module):
-    def __init__(self, in_channel, dlatents_dim,
+    def __init__(self, in_channel, out_channel, dlatents_dim,
                  up=True, resample_kernel=[1, 3, 3, 1]):
         super(ToRGB, self).__init__()
 
@@ -356,8 +356,8 @@ class ToRGB(nn.Module):
             self.upsample = Upsample(resample_kernel)
 
         self.conv = Modulated_conv2d_layer(
-            in_channel, 3, dlatents_dim, kernel=1, demodulate=False)
-        self.bias = Parameter(torch.zeros(1, 3, 1, 1))
+            in_channel, out_channel, dlatents_dim, kernel=1, demodulate=False)
+        self.bias = Parameter(torch.zeros(1, out_channel, 1, 1))
 
     def forward(self, latent, style, skip=None):
         x = self.conv(latent, style)
@@ -371,10 +371,10 @@ class ToRGB(nn.Module):
     
 
 class FromRGB(nn.Module):
-    def __init__(self, out_channel, resample_kernel=[1, 3, 3, 1]):
+    def __init__(self, in_channel, out_channel, resample_kernel=[1, 3, 3, 1]):
         super(FromRGB, self).__init__()
         
-        self.conv = Conv2d_layer(3, out_channel, kernel=1)
+        self.conv = Conv2d_layer(in_channel, out_channel, kernel=1)
         self.bias = Parameter(torch.zeros(1, out_channel, 1, 1))
         self.act = FusedLeakyReLU(out_channel)
         
@@ -390,8 +390,7 @@ def minibatch_stddev_layer(x, group_size=4, num_new_features=1):
                   c//num_new_features, h, w).float()
     y = y - y.mean(dim=0, keepdims=True)
     y = torch.sqrt(torch.mean(y**2, dim=0) + 1e-8)
-    y = torch.mean(y, dim=[2,3,4], keepdims=True)
-    y = torch.mean(y, dim=2)
+    y = torch.mean(y, dim=[2,3,4], keepdims=True).squeeze(2)
     y = y.type(x.dtype)
     y = y.repeat(group_size, 1, h, w)
     return torch.cat([x, y], dim=1)
@@ -471,7 +470,7 @@ class G_synthesis_stylegan2(nn.Module):
         # 4x4
         self.input = Parameter(torch.randn((1, nf(1), 4, 4)))
         self.bottom_layer = Layer(nf(1), nf(1), use_modulate=True, dlatents_dim=dlatent_size, kernel=kernel, resample_kernel=resample_kernel)
-        self.trgbs.append(ToRGB(nf(1), dlatent_size))
+        self.trgbs.append(ToRGB(nf(1), num_channels, dlatent_size))
         
         # main layers
         self.convs = nn.ModuleList()
@@ -484,7 +483,7 @@ class G_synthesis_stylegan2(nn.Module):
                 Layer(fmaps, fmaps, use_modulate=True, dlatents_dim=dlatent_size, kernel=kernel, resample_kernel=resample_kernel)
             ])
             if self.architecture == 'skip':
-                self.trgbs.append(ToRGB(fmaps, dlatent_size))
+                self.trgbs.append(ToRGB(fmaps, num_channels, dlatent_size))
             in_channel = fmaps
 
     def forward(self, dlatents_in):

@@ -16,7 +16,7 @@ class Generator(nn.Module):
             dlatent_avg_beta=0.995,
             mapping_network='G_mapping',
             synthesis_netowrk='G_synthesis_stylegan2',
-            skeleton_channel=0,
+            skeleton_channels=0,
             **kwargs):
         super(Generator, self).__init__()
         
@@ -31,12 +31,15 @@ class Generator(nn.Module):
         self.resolution_log2 = int(np.log2(resolution))
         self.num_layers = self.resolution_log2 * 2 - 2
         assert resolution == 2**self.resolution_log2 and resolution >= 4
-        if skeleton_channel > 0:
-            assert skeleton_channel in [1, 3]
-            self.use_skeleton = True
-            self.skeleton_channel = skeleton_channel
+        
         self.return_dlatents = return_dlatents
         
+        if skeleton_channels > 0:
+            self.use_skeleton = True
+            self.num_channels = 3 + skeleton_channels
+        else:
+            self.num_channels = 3
+            
         # Define arch. of components
         mapping_class = getattr(
             importlib.import_module('.components', 'models'), mapping_network
@@ -49,6 +52,7 @@ class Generator(nn.Module):
         )
         self.synthesis_network = synthesis_class(
             self.num_layers, self.resolution_log2,
+            num_channels=self.num_channels,
             dlatents_size=dlatents_size, architecture='skip'
         )
 
@@ -73,13 +77,14 @@ class Generator(nn.Module):
 
 class Discriminator(nn.Module):
     def __init__(
-            self, label_size, resolution,
+            self, label_size, resolution, skeleton_channels=3,
             fmap_base = 16<<10, fmap_decay=1.0, fmap_min=1, fmap_max=512,          
             mbstd_group_size=4, mbstd_num_features=1,             
             resample_kernel=[1,3,3,1], architecture='resnet',
             **kwargs):
         super(Discriminator, self).__init__()
         assert architecture in ['skip', 'resnet'], "unsupported D architecture."
+        self.img_channels = skeleton_channels + 3
         self.mbstd_group_size = mbstd_group_size
         self.mbstd_num_features = mbstd_num_features
         self.resolution_log2 = int(np.log2(resolution))
@@ -89,7 +94,7 @@ class Discriminator(nn.Module):
             return np.clip(scaled, fmap_min, fmap_max)
         
         if self.arch == 'resnet':
-            self.frgb = FromRGB(nf(self.resolution_log2-1))
+            self.frgb = FromRGB(self.img_channels, nf(self.resolution_log2-1))
 
         self.blocks = nn.ModuleList()
         
@@ -102,6 +107,7 @@ class Discriminator(nn.Module):
         self.label_out = Dense_layer(nf(0), max(label_size, 1))
 
     def forward(self, images_in, labels_in=None):
+        assert images_in.shape[1] == self.img_channels, "(D) channel unmatched"
         x = None
         skip = None
         if self.arch == 'resnet':

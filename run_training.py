@@ -1,9 +1,9 @@
 import argparse
+from time import time
 import math
 import random
 import os
 import sys
-os.environ['CUDA_VISIBLE_DEVICES'] = "2,3" ###
 from pathlib import Path
 
 import numpy as np
@@ -23,8 +23,9 @@ except ImportError:
 from models import Generator, Discriminator
 from losses import nonsaturating_loss, path_regularize, logistic_loss, d_r1_loss
 from flags import get_arguments
-from dataset import MultiResolutionDataset, ImageFolderDataset
+from dataset import MultiResolutionDataset, ImageFolderDataset, MultiChannelDataset
 from distributed import (
+    master_only,
     get_rank,
     synchronize,
     reduce_loss_dict,
@@ -32,7 +33,7 @@ from distributed import (
     get_world_size,
 )
 
-
+@master_only
 def get_result_dir(root, n_gpu, dataset):
     p = Path(root)
     run_id = '00000'
@@ -41,7 +42,7 @@ def get_result_dir(root, n_gpu, dataset):
     if not p.exists():
         p.mkdir()
 
-    ids = [int(str(x).split('/')[-1][:5]) for x in p.iterdir()]
+    ids = [int(str(x).split('/')[-1][:5]) for x in p.glob("[0-9][0-9][0-9][0-9][0-9]-*")]
     if len(ids) > 0:
         run_id = str(sorted(ids)[-1] + 1).zfill(5)
     
@@ -58,16 +59,27 @@ def data_sampler(dataset, shuffle, distributed):
     else:
         return data.SequentialSampler(dataset)
 
-def get_dataloader(data_path, resolution, distributed=True):
-    transform = transforms.Compose(
-        [
-            transforms.RandomHorizontalFlip(),
+def get_dataloader(data_path, resolution, batch, skeleton_channels=0, num_worker=2, distributed=True):
+    assert num_worker >= 1
+    trf = [
             transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5), inplace=True),
+            transforms.Normalize([0.5] * (3 + skeleton_channels),
+                                 [0.5] * (3 + skeleton_channels),
+                                 inplace=True),
         ]
-    )
+    if skeleton_channels == 0:
+        trf.insert(0, transforms.RandomHorizontalFlip())
+    transform = transforms.Compose(trf)
     
-    if "mpii" in data_path:
+    if skeleton_channels == 2:
+        print("using multichannel dataset for now")
+        sources = ['images', 'masks', 'skeletons']
+        dataset = MultiChannelDataset(data_path, resolution, sources, suffix='train2017', transform=transform)
+        print(f'total dataset: {len(dataset)}')
+    #elif skeleton_channels > 0:
+    #    print("using skeleton dataset")
+    #    dataset = SkeletonDataset(data_path, resolution, transform)
+    elif "mpii" in data_path:
         print("using ImageFolder dataset")
         dataset = ImageFolderDataset(data_path, transform, resolution)
     else:
@@ -75,7 +87,8 @@ def get_dataloader(data_path, resolution, distributed=True):
 
     loader = data.DataLoader(
         dataset,
-        batch_size=args.batch,
+        batch_size=batch,
+        num_workers=num_worker,
         sampler=data_sampler(dataset, shuffle=True, distributed=distributed),
         drop_last=True,
     )
@@ -132,6 +145,7 @@ class Trainer():
         self.result_dir = args.result_dir
         self.n_sample = args.n_sample
         self.latent = args.latent
+        self.skeleton_channels = args.skeleton_channels
         self.batch = args.batch
         self.mixing = args.mixing
         self.r1 = args.r1
@@ -142,12 +156,15 @@ class Trainer():
         self.use_wandb = args.wandb
         
         # datset
-        self.loader = get_dataloader(args.path, args.size, args.distributed)
-
+        print("get dataloader ...")
+        t = time()
+        self.loader = get_dataloader(args.path, args.size, args.batch, self.skeleton_channels, args.num_worker, args.distributed)
+        print(f"get dataloader complete ({time() - t})")
+        
         # Define model
-        self.generator = Generator(args.latent, 0, args.size, is_training=True).to(self.device)
-        self.discriminator = Discriminator(0, args.size).to(self.device)
-        self.g_ema = Generator(args.latent, 0, args.size, is_training=False).to(self.device)    
+        self.generator = Generator(args.latent, 0, args.size, skeleton_channels=self.skeleton_channels, is_training=True).to(self.device)
+        self.discriminator = Discriminator(0, args.size, skeleton_channels=self.skeleton_channels).to(self.device)
+        self.g_ema = Generator(args.latent, 0, args.size, skeleton_channels=self.skeleton_channels, is_training=False).to(self.device)    
         self.g_ema.eval()
         accumulate(self.g_ema, self.generator, 0)
         
@@ -330,6 +347,58 @@ class Trainer():
                     )
                 )
 
+                if i % 500 == 0:
+                    with torch.no_grad():
+                        self.g_ema.eval()
+                        sample, _ = self.g_ema([sample_z])
+                        if sample.shape[1] in [5,6]:
+                            utils.save_image(
+                                sample[:, :3, :, :],
+                                self.result_dir / f'sample-{str(i).zfill(6)}.png',
+                                nrow=int(self.n_sample ** 0.5),
+                                normalize=True,
+                                range=(-1, 1),
+                            )
+                            if i == 0:
+                                mask_sample = sample[:,3,:,:].cpu().numpy()
+                                sk_sample = sample[:,4,:,:].cpu().numpy()
+                                print("make range: ", mask_sample.max(), mask_sample.min())
+                                print("sk range: ", sk_sample.max(), sk_sample.min())
+                            utils.save_image(
+                                sample[:, 3:4, :, :],
+                                self.result_dir / f'sample-{str(i).zfill(6)}-mask.png',
+                                nrow=int(self.n_sample ** 0.5),
+                                normalize=True,
+                                range=(-1, 1),
+                            )
+                            utils.save_image(
+                                sample[:, 4:, :, :],
+                                self.result_dir / f'sample-{str(i).zfill(6)}-sk.png',
+                                nrow=int(self.n_sample ** 0.5),
+                                normalize=True,
+                                range=(-1, 1),
+                            )
+                        else:
+                            utils.save_image(
+                                sample,
+                                self.result_dir / f'sample-{str(i).zfill(6)}.png',
+                                nrow=int(self.n_sample ** 0.5),
+                                normalize=True,
+                                range=(-1, 1),
+                            )
+
+                if i % 2000 == 0:
+                    torch.save(
+                        {
+                            'g': g_module.state_dict(),
+                            'd': d_module.state_dict(),
+                            'g_ema': self.g_ema.state_dict(),
+                            'g_optim': self.g_optim.state_dict(),
+                            'd_optim': self.d_optim.state_dict(),
+                        },
+                        self.result_dir / f'ckpt-{str(i).zfill(6)}.pt',
+                    )
+
                 if wandb and self.use_wandb:
                     wandb.log(
                         {
@@ -344,50 +413,33 @@ class Trainer():
                         }
                     )
 
-                if i % 100 == 0:
-                    with torch.no_grad():
-                        self.g_ema.eval()
-                        sample, _ = self.g_ema([sample_z])
-                        utils.save_image(
-                            sample,
-                            self.result_dir / f'sample-{str(i).zfill(6)}.png',
-                            nrow=int(self.n_sample ** 0.5),
-                            normalize=True,
-                            range=(-1, 1),
-                        )
-
-                if i % 10000 == 0:
-                    torch.save(
-                        {
-                            'g': g_module.state_dict(),
-                            'd': d_module.state_dict(),
-                            'g_ema': self.g_ema.state_dict(),
-                            'g_optim': self.g_optim.state_dict(),
-                            'd_optim': self.d_optim.state_dict(),
-                        },
-                        self.result_dir / f'ckpt-{str(i).zfill(6)}.pt',
-                    )
-
-
 if __name__ == '__main__':
-
+    # os.environ['CUDA_VISIBLE_DEVICES'] = "2,3,4,5" ###
     args = get_arguments()
     n_gpu = int(os.environ['WORLD_SIZE']) if 'WORLD_SIZE' in os.environ else 1
     args.distributed = False if args.local or n_gpu <= 1 else True
     
-    
-    args.result_dir = get_result_dir(args.result_dir, n_gpu, args.path)
-    with open(args.result_dir / 'log.txt', 'w') as f:
-        print(vars(args), file=f)
-
     if args.distributed:
         torch.cuda.set_device(args.local_rank)
         torch.distributed.init_process_group(backend='nccl', init_method='env://')
         synchronize()
+        
+        print = master_only(print)
+        print("print function overriden")
 
+    args.result_dir = get_result_dir(args.result_dir, n_gpu, args.path)
+    print(args.result_dir)
+    if args.result_dir is not None:
+        with open(args.result_dir / 'log.txt', 'w') as f:
+            print(vars(args), file=f)
+
+    print("init. trainer...")
+    t = time()
     trainer = Trainer(args)
+    print(f"init. trainer complete. (costs {time() - t})")
 
     if get_rank() == 0 and wandb is not None and args.wandb:
-        wandb.init(project='stylegan2_mpii')
-        
+        wandb.init(project='stylegan2_coco')
+    
+    print("start training")
     trainer.train()

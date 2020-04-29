@@ -6,15 +6,32 @@ from torch import distributed as dist
 from torch.utils.data.sampler import Sampler
 
 
+returned_values = {
+    'get_rank': 0,
+    'synchronize': None,
+    'get_world_size': 1,
+    
+}
+
+def master_only(func):
+    def wrapper(*args, **kwargs):
+        if dist.is_available() and dist.is_initialized():
+            if dist.get_rank()==0:
+                return func(*args, **kwargs)
+        else:
+            return func(*args, **kwargs)
+    return wrapper
+
+
 def get_rank():
-    if not dist.is_available():
-        return 0
+    if dist.is_available() and dist.is_initialized():
+        return dist.get_rank()
+    return 0
 
-    if not dist.is_initialized():
-        return 0
-
-    return dist.get_rank()
-
+def get_world_size():
+    if dist.is_available() and dist.is_initialized():
+        dist.get_world_size()
+    return 1
 
 def synchronize():
     if not dist.is_available():
@@ -31,14 +48,14 @@ def synchronize():
     dist.barrier()
 
 
-def get_world_size():
-    if not dist.is_available():
-        return 1
+# def get_world_size():
+#     if not dist.is_available():
+#         return 1
 
-    if not dist.is_initialized():
-        return 1
+#     if not dist.is_initialized():
+#         return 1
 
-    return dist.get_world_size()
+#     return dist.get_world_size()
 
 
 def reduce_sum(tensor):
