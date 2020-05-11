@@ -16,7 +16,7 @@ class Generator(nn.Module):
             dlatent_avg_beta=0.995,
             mapping_network='G_mapping',
             synthesis_netowrk='G_synthesis_stylegan2',
-            skeleton_channels=0,
+            extra_channels=0,
             **kwargs):
         super(Generator, self).__init__()
         
@@ -34,11 +34,10 @@ class Generator(nn.Module):
         
         self.return_dlatents = return_dlatents
         
-        if skeleton_channels > 0:
+        self.num_channels = 3
+        if extra_channels > 0:
             self.use_skeleton = True
-            self.num_channels = 3 + skeleton_channels
-        else:
-            self.num_channels = 3
+            self.num_channels += extra_channels
             
         # Define arch. of components
         mapping_class = getattr(
@@ -77,14 +76,14 @@ class Generator(nn.Module):
 
 class Discriminator(nn.Module):
     def __init__(
-            self, label_size, resolution, skeleton_channels=3,
+            self, label_size, resolution, extra_channels=3,
             fmap_base = 16<<10, fmap_decay=1.0, fmap_min=1, fmap_max=512,          
             mbstd_group_size=4, mbstd_num_features=1,             
             resample_kernel=[1,3,3,1], architecture='resnet',
             **kwargs):
         super(Discriminator, self).__init__()
         assert architecture in ['skip', 'resnet'], "unsupported D architecture."
-        self.img_channels = skeleton_channels + 3
+        self.img_channels = extra_channels + 3
         self.mbstd_group_size = mbstd_group_size
         self.mbstd_num_features = mbstd_num_features
         self.resolution_log2 = int(np.log2(resolution))

@@ -24,7 +24,10 @@ def extract_feature_from_real_images(args, inception, device):
                 yield batch
     
     print("getting dataloader of real images...")
-    loader = get_dataloader(args.path, args.size, args.batch, args.skeleton_channels, distributed=False)
+    if args.extra_channels == 2:
+        loader = get_dataloader(args.path, args.size, args.batch, args.extra_channels, suffix='train2017', distributed=False)
+    else:
+        loader = get_dataloader(args.path, args.size, args.batch, args.extra_channels, distributed=False)
     loader = sample_data(loader)
     print('loading dataloader complete')
     n_batch = args.n_sample // args.batch
@@ -113,7 +116,7 @@ if __name__ == '__main__':
     parser.add_argument('--inception', type=str, default=None)
     parser.add_argument('ckpt', metavar='CHECKPOINT', help='model ckpt or dir')
     parser.add_argument('--path', type=str, default=None, help='path to dataset')
-    parser.add_argument('--skeleton_channels', type=int, default=3)
+    parser.add_argument('--extra_channels', type=int, default=3)
 
     args = parser.parse_args()
     assert args.inception or args.path, "inception pkl file or dataset path required"
@@ -157,7 +160,8 @@ if __name__ == '__main__':
         names.append(int(ckpt.name[5:11])/1000)
         ckpt = torch.load(ckpt)
         
-        g = Generator(512, 0, 256, skeleton_channels=3).to(device) # latent_dim, label_size, resolution, skeleton_ch
+        # latent_dim, label_size, resolution
+        g = Generator(512, 0, 256, extra_channels=args.extra_channels).to(device)
         g.load_state_dict(ckpt['g_ema'])
         g = nn.DataParallel(g)
         g.eval()

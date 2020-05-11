@@ -1,9 +1,9 @@
-import argparse
-from time import time
-import math
-import random
 import os
 import sys
+import math
+import random
+import logging
+from time import time
 from pathlib import Path
 
 import numpy as np
@@ -20,10 +20,11 @@ try:
 except ImportError:
     wandb = None
 
+from misc import parse_args, prepare_training
 from models import Generator, Discriminator
 from losses import nonsaturating_loss, path_regularize, logistic_loss, d_r1_loss
-from flags import get_arguments
 from dataset import MultiResolutionDataset, ImageFolderDataset, MultiChannelDataset
+from config import config, update_config
 from distributed import (
     master_only,
     get_rank,
@@ -32,23 +33,6 @@ from distributed import (
     reduce_sum,
     get_world_size,
 )
-
-@master_only
-def get_result_dir(root, n_gpu, dataset):
-    p = Path(root)
-    run_id = '00000'
-    experiment = 'train'
-    dataset_name = dataset.split('/')[-1]
-    if not p.exists():
-        p.mkdir()
-
-    ids = [int(str(x).split('/')[-1][:5]) for x in p.glob("[0-9][0-9][0-9][0-9][0-9]-*")]
-    if len(ids) > 0:
-        run_id = str(sorted(ids)[-1] + 1).zfill(5)
-    
-    result_dir = p / f'{run_id}-{experiment}-{n_gpu}gpu-{dataset_name}'
-    result_dir.mkdir()
-    return result_dir
 
 def data_sampler(dataset, shuffle, distributed):
     if distributed:
@@ -59,36 +43,31 @@ def data_sampler(dataset, shuffle, distributed):
     else:
         return data.SequentialSampler(dataset)
 
-def get_dataloader(data_path, resolution, batch, skeleton_channels=0, num_worker=2, distributed=True):
-    assert num_worker >= 1
+def get_dataloader(config, distributed=True):
+    
     trf = [
-            transforms.ToTensor(),
-            transforms.Normalize([0.5] * (3 + skeleton_channels),
-                                 [0.5] * (3 + skeleton_channels),
-                                 inplace=True),
-        ]
-    if skeleton_channels == 0:
+        transforms.ToTensor(),
+        transforms.Normalize([0.5] * (3 + config.MODEL.EXTRA_CHANNEL),
+                             [0.5] * (3 + config.MODEL.EXTRA_CHANNEL),
+                             inplace=True),
+    ]
+    if config.MODEL.EXTRA_CHANNEL == 0:
         trf.insert(0, transforms.RandomHorizontalFlip())
     transform = transforms.Compose(trf)
     
-    if skeleton_channels == 2:
-        print("using multichannel dataset for now")
-        sources = ['images', 'masks', 'skeletons']
-        dataset = MultiChannelDataset(data_path, resolution, sources, suffix='train2017', transform=transform)
-        print(f'total dataset: {len(dataset)}')
-    #elif skeleton_channels > 0:
-    #    print("using skeleton dataset")
-    #    dataset = SkeletonDataset(data_path, resolution, transform)
-    elif "mpii" in data_path:
-        print("using ImageFolder dataset")
-        dataset = ImageFolderDataset(data_path, transform, resolution)
-    else:
-        dataset = MultiResolutionDataset(data_path, transform, resolution)
-
+    if config.DATASET.DATASET == "MultiChannelDataset":
+        print("using multichannel dataset")
+        dataset = MultiChannelDataset(config, transform=transform)
+        print(f'total dataset: {len(dataset)} (flip: {config.DATASET.FLIP},'
+              f'load in memory: {config.DATASET.LOAD_IN_MEM})')
+    # else:
+    #     dataset = MultiResolutionDataset(roots, transform, resolution)
+    
+    # TODO: load dataset into shared memory 
     loader = data.DataLoader(
         dataset,
-        batch_size=batch,
-        num_workers=num_worker,
+        batch_size=config.TRAIN.BATCH_SIZE_PER_GPU, ##
+        num_workers=config.WORKERS,
         sampler=data_sampler(dataset, shuffle=True, distributed=distributed),
         drop_last=True,
     )
@@ -136,60 +115,68 @@ def set_grad_none(model, targets):
             p.grad = None
 
 class Trainer():
-    def __init__(self, args):
+    def __init__(self, args, config, logger):
         
         # dummy. mod. in the future
         self.device = 'cuda'
+        self.logger = logger
         self.local_rank = args.local_rank
         self.distributed = args.distributed
-        self.result_dir = args.result_dir
-        self.n_sample = args.n_sample
-        self.latent = args.latent
-        self.skeleton_channels = args.skeleton_channels
-        self.batch = args.batch
-        self.mixing = args.mixing
-        self.r1 = args.r1
-        self.g_reg_every = args.g_reg_every
-        self.d_reg_every = args.d_reg_every
-        self.path_regularize = args.path_regularize
-        self.path_batch_shrink = args.path_batch_shrink
+        self.out_dir = args.out_dir
         self.use_wandb = args.wandb
+        self.n_sample = config.N_SAMPLE
+        self.resolution = config.RESOLUTION
+        # model
+        
+        self.n_mlp = config.MODEL.N_MLP
+        self.latent = config.MODEL.LATENT_SIZE
+        self.extra_channels = config.MODEL.EXTRA_CHANNEL
+        self.batch = config.TRAIN.BATCH_SIZE_PER_GPU
+        self.mixing = config.TRAIN.STYLE_MIXING_PROB
+        self.r1 = config.TRAIN.R1
+        self.g_reg_every = config.TRAIN.G_REG_EVERY
+        self.d_reg_every = config.TRAIN.D_REG_EVERY
+        self.path_regularize = config.TRAIN.PATH_REGULARIZE
+        self.path_batch_shrink = config.TRAIN.PATH_BATCH_SHRINK
+        
         
         # datset
         print("get dataloader ...")
         t = time()
-        self.loader = get_dataloader(args.path, args.size, args.batch, self.skeleton_channels, args.num_worker, args.distributed)
+        self.loader = get_dataloader(config, distributed=args.distributed)
+#         self.loader = get_dataloader(args.path, args.size, args.batch, self.extra_channels, args.num_worker,
+#                                      load_in_mem=False, flip=True, distributed=args.distributed)
         print(f"get dataloader complete ({time() - t})")
         
         # Define model
-        self.generator = Generator(args.latent, 0, args.size, skeleton_channels=self.skeleton_channels, is_training=True).to(self.device)
-        self.discriminator = Discriminator(0, args.size, skeleton_channels=self.skeleton_channels).to(self.device)
-        self.g_ema = Generator(args.latent, 0, args.size, skeleton_channels=self.skeleton_channels, is_training=False).to(self.device)    
+        self.generator = Generator(self.latent, 0, self.resolution, extra_channels=self.extra_channels, is_training=True).to(self.device)
+        self.discriminator = Discriminator(0, self.resolution, extra_channels=self.extra_channels).to(self.device)
+        self.g_ema = Generator(self.latent, 0, self.resolution, extra_channels=self.extra_channels, is_training=False).to(self.device)    
         self.g_ema.eval()
         accumulate(self.g_ema, self.generator, 0)
         
-        g_reg_ratio = args.g_reg_every / (args.g_reg_every + 1)
-        d_reg_ratio = args.d_reg_every / (args.d_reg_every + 1)
+        g_reg_ratio = self.g_reg_every / (self.g_reg_every + 1)
+        d_reg_ratio = self.d_reg_every / (self.d_reg_every + 1)
 
         self.g_optim = optim.Adam(
             self.generator.parameters(),
-            lr=args.lr * g_reg_ratio,
+            lr=config.TRAIN.LR * g_reg_ratio,
             betas=(0 ** g_reg_ratio, 0.99 ** g_reg_ratio)
         )
         self.d_optim = optim.Adam(
             self.discriminator.parameters(),
-            lr=args.lr * d_reg_ratio,
+            lr=config.TRAIN.LR * d_reg_ratio,
             betas=(0 ** d_reg_ratio, 0.99 ** d_reg_ratio)
         )
         
-        self.total_step = args.iter
+        self.total_step = config.TRAIN.ITERATION
         self.start_iter = 0
-        if args.ckpt is not None:
-            print('load model:', args.ckpt)
-            ckpt = torch.load(args.ckpt)
+        if config.TRAIN.CKPT:
+            print('load model:', config.TRAIN.CKPT)
+            ckpt = torch.load(config.TRAIN.CKPT)
 
             try:
-                ckpt_name = os.path.basename(args.ckpt)
+                ckpt_name = os.path.basename(config.TRAIN.CKPT)
                 self.start_iter = int(os.path.splitext(ckpt_name)[0])
             except ValueError:
                 pass
@@ -250,6 +237,7 @@ class Trainer():
 
         # start training
         for i in pbar:
+            s = time()
             real_img = next(loader)[0] ###
             real_img = real_img.to(self.device)
 
@@ -351,37 +339,38 @@ class Trainer():
                     with torch.no_grad():
                         self.g_ema.eval()
                         sample, _ = self.g_ema([sample_z])
-                        if sample.shape[1] in [5,6]:
-                            utils.save_image(
-                                sample[:, :3, :, :],
-                                self.result_dir / f'sample-{str(i).zfill(6)}.png',
-                                nrow=int(self.n_sample ** 0.5),
-                                normalize=True,
-                                range=(-1, 1),
-                            )
+                        
+                        if sample.shape[1] == 5:
+                            # track range for debug
                             if i == 0:
                                 mask_sample = sample[:,3,:,:].cpu().numpy()
                                 sk_sample = sample[:,4,:,:].cpu().numpy()
-                                print("make range: ", mask_sample.max(), mask_sample.min())
-                                print("sk range: ", sk_sample.max(), sk_sample.min())
+                                self.logger.debug("make range: ", mask_sample.max(), mask_sample.min())
+                                self.logger.debug("sk range: ", sk_sample.max(), sk_sample.min())
+                            
+                            # display overlap images
+                            s_i = sample[:,:3,:,:]
+                            s_s = sample[:,3:4,:,:].repeat((1,3,1,1))
+                            s_m = sample[:,4:,:,:].repeat((1,3,1,1))
+                            
+                            sample = []
+                            for img,sk,mk in zip(s_i, s_s, s_m):
+                                sample.append(img[None, ...])
+                                sample.append(sk[None, ...])
+                                sample.append(mk[None, ...])
+                            sample = torch.cat(sample, dim=0)
                             utils.save_image(
-                                sample[:, 3:4, :, :],
-                                self.result_dir / f'sample-{str(i).zfill(6)}-mask.png',
-                                nrow=int(self.n_sample ** 0.5),
+                                sample,
+                                self.out_dir / f'samples/fake-{str(i).zfill(6)}.png',
+                                nrow=int(self.n_sample ** 0.5) * 3,
                                 normalize=True,
                                 range=(-1, 1),
                             )
-                            utils.save_image(
-                                sample[:, 4:, :, :],
-                                self.result_dir / f'sample-{str(i).zfill(6)}-sk.png',
-                                nrow=int(self.n_sample ** 0.5),
-                                normalize=True,
-                                range=(-1, 1),
-                            )
+
                         else:
                             utils.save_image(
                                 sample,
-                                self.result_dir / f'sample-{str(i).zfill(6)}.png',
+                                self.out_dir / f'samples/fake-{str(i).zfill(6)}.png',
                                 nrow=int(self.n_sample ** 0.5),
                                 normalize=True,
                                 range=(-1, 1),
@@ -396,12 +385,13 @@ class Trainer():
                             'g_optim': self.g_optim.state_dict(),
                             'd_optim': self.d_optim.state_dict(),
                         },
-                        self.result_dir / f'ckpt-{str(i).zfill(6)}.pt',
+                        self.out_dir /  f'checkpoints/ckpt-{str(i).zfill(6)}.pt',
                     )
 
                 if wandb and self.use_wandb:
                     wandb.log(
                         {
+                            'training time': time() - s,
                             'Generator': g_loss_val,
                             'Discriminator': d_loss_val,
                             'R1': r1_val,
@@ -414,9 +404,12 @@ class Trainer():
                     )
 
 if __name__ == '__main__':
-    # os.environ['CUDA_VISIBLE_DEVICES'] = "2,3,4,5" ###
-    args = get_arguments()
-    n_gpu = int(os.environ['WORLD_SIZE']) if 'WORLD_SIZE' in os.environ else 1
+    args = parse_args()
+    update_config(config, args)
+    os.environ['CUDA_VISIBLE_DEVICES'] = ','.join(str(x) for x in config.GPUS)
+    print("CUDA VISIBLE DEVICES: ", os.environ['CUDA_VISIBLE_DEVICES'])
+    #n_gpu = int(os.environ['WORLD_SIZE']) if 'WORLD_SIZE' in os.environ else 1
+    n_gpu = len(config.GPUS)
     args.distributed = False if args.local or n_gpu <= 1 else True
     
     if args.distributed:
@@ -424,22 +417,30 @@ if __name__ == '__main__':
         torch.distributed.init_process_group(backend='nccl', init_method='env://')
         synchronize()
         
+        # maybe use configuration file to control master-slave behavior
         print = master_only(print)
+        prepare_training = master_only(prepare_training)
         print("print function overriden")
+    
+    logger, args.out_dir = prepare_training(config, args.cfg)
+    
+    
+    if not logger:
+        log_format = '<{}> %(levelname)-8s %(asctime)-15s %(message)s'.format(get_rank())
+        logging.basicConfig(level=logging.WARN,
+                            format=log_format)
+        logger = logging.getLogger()
 
-    args.result_dir = get_result_dir(args.result_dir, n_gpu, args.path)
-    print(args.result_dir)
-    if args.result_dir is not None:
-        with open(args.result_dir / 'log.txt', 'w') as f:
-            print(vars(args), file=f)
+    logger.info("Only keep logs in log file on master")
 
-    print("init. trainer...")
+
+    logger.info("initialize trainer...")
     t = time()
-    trainer = Trainer(args)
-    print(f"init. trainer complete. (costs {time() - t})")
+    trainer = Trainer(args, config, logger)
+    logger.info(f"trainer initialized. (costs {time() - t})")
 
     if get_rank() == 0 and wandb is not None and args.wandb:
-        wandb.init(project='stylegan2_coco')
+        wandb.init(project='stylegan2')
     
-    print("start training")
+    logger.info("start training")
     trainer.train()

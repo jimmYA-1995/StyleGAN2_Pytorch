@@ -18,6 +18,7 @@ def master_only(func):
         if dist.is_available() and dist.is_initialized():
             if dist.get_rank()==0:
                 return func(*args, **kwargs)
+            return (None, None)
         else:
             return func(*args, **kwargs)
     return wrapper
