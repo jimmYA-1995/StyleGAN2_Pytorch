@@ -60,7 +60,7 @@ def ImageFolderDataset(path, transform=None, resolution=None):
     return ImageFolder(path, transform=transform, loader=image_loader, is_valid_file=check_valid)
 
 
-def load_images_and_concat(path, resolution, sources): # is functools.partial needs partial arg a keyword arg?
+def load_images_and_concat(path, resolution, sources, flip=False): # is functools.partial needs partial arg a keyword arg?
     from torchvision import get_image_backend
     assert get_image_backend() == 'PIL'
     # assert isinstance(paths, (tuple, list))
@@ -68,8 +68,13 @@ def load_images_and_concat(path, resolution, sources): # is functools.partial ne
     try:
         imgs = []
         for src in sources:
-            path = src_path.replace(sources[-1], src)
+            path = src_path.replace(sources[0], src)
+            if not Path(path).exists():
+                raise RuntimeError(f'Path {path} does not exists. Please check all your sources \
+                                   in dataset are match')
             img = Image.open(path).resize((resolution, resolution), Image.ANTIALIAS)
+            if flip:
+                img = img.transpose(Image.FLIP_LEFT_RIGHT)
             img = np.array(img)
             if img.ndim == 2:
                 img = img[..., None]
@@ -85,55 +90,49 @@ def load_images_and_concat(path, resolution, sources): # is functools.partial ne
     
 
 class MultiChannelDataset(Dataset):
-    def __init__(self, root, resolution, sources=['images'], suffix=None, transform=None, target_transform=None,
-                 loader=load_images_and_concat, load_in_mem=False, **kwargs):
+    """ This dataset concatenate the source images with other 
+        information images like skeletons & masks.
+    
+    """
+    def __init__(self, config, transform=None, **kwargs):
         
+        self.roots = config.DATASET.ROOTS
         self.transform = transform
-        self.target_transform = target_transform
-        self.loader = partial(loader, resolution=resolution, sources=sources)
-        self.load_in_mem = load_in_mem
+        self.target_transform = None ##
+        self.loader = partial(load_images_and_concat,
+                              resolution=config.RESOLUTION,
+                              sources=config.DATASET.SOURCE)
+        self.load_in_mem = config.DATASET.LOAD_IN_MEM
+        self.flip = config.DATASET.FLIP
+      
+        sources = config.DATASET.SOURCE
+        self.img_paths = []
+        for root in self.roots:
+            root = Path(root)
+            for src in sources:
+                assert (root / src).is_dir(), f'source directory {src} is not in root path: {root}'
         
-        root = Path(root)
-        for src in sources:
-            assert (root / src).is_dir(), f'source directory {src} is not in root path'
+            self.img_paths.extend(list((root / sources[0]).glob('**/*.jpg')))
         
-        def path_exists(path):
-            return Path(str(path).replace('images', 'skeleton')).is_file()
-        
-        if suffix:
-            self.img_paths = list((root / sources[-1] / suffix).glob('*.jpg'))
-        else:
-            self.img_paths = list((root / sources[-1]).glob('*.jpg'))
-            
-#         self.img_paths = []
-#         for img_path in tqdm(img_paths):
-#             path_pair =[]
-#             for src in sources[:-1]:
-#                 p = str(img_path).replace(sources[-1], src)
-#                 if Path(p).is_file():
-#                     path_pair.append(p)
-#                 else:
-#                     break
-#             else:
-#                 path_pair.append(0) # label
-#                 assert len(path_pair) == len(sources)+1, f"wrong in filter existing paths {path_pair}"
-#                 self.img_paths.append(path_pair)
         
         self.length = len(self.img_paths)
+        if self.flip:
+            self.length *= 2
         
         if self.load_in_mem:
             print('Loading all images into memory...')
             self.data, self.labels = [], []
-            for index in tqdm(range(len(self.img_paths))):
-                paths = self.img_paths[index][:-1]
-                target = self.img_paths[index][-1]
-                data = self.loader(paths)
+            for index in tqdm(range(self.length)):
+                path = self.img_paths[index % (self.length // 2)]
+                target = 0 # unconditional for now
+                flip = index >= 2 / self.length
+                concat_img = self.loader(path, flip=flip)
                 if self.transform is not None:
-                    data = self.transform(data)
-                # if self.target_transform is not None:
-                #     target = self.target_transform(target)
-                self.data.append(data)
-                # self.labels.append(target)
+                    concat_img = self.transform(concat_img)
+                #if self.target_transform is not None:
+                #    target = self.target_transform(target)
+                self.data.append(concat_img)
+                self.labels.append(target)
         
     def __len__(self):
         return self.length
@@ -141,29 +140,25 @@ class MultiChannelDataset(Dataset):
     def __getitem__(self, index):
         if self.load_in_mem:
             img = self.data[index]
-            target = 0 # self.labels[index]
+            target = self.labels[index]
         else:
-            paths = self.img_paths[index]
-            imgs = self.loader(paths)
+            path = self.img_paths[index % (self.length // 2)]
+            flip = index >= 2/self.length
+            concat_img = self.loader(path, flip=flip)
+            target = 0
             
             if self.transform is not None:
-                try:
-                    img = self.transform(imgs)
-                except RuntimeError as e:
-                    print(" *** exception ***", imgs.shape, paths)
-                    raise RuntimeError(e)
-                    
-            # target = self.img_paths[index][-1]
-
-            # if self.target_transform is not None:
-            #     target = self.target_transform(target)
+                concat_img = self.transform(concat_img)
+                
+            #if self.target_transform is not None:
+            #    target = self.target_transform(target) 
             
-        return img, 0
+        return concat_img, target
 
     def __repr__(self):
         fmt_str = 'Dataset ' + self.__class__.__name__ + '\n'
         fmt_str += '    Number of datapoints: {}\n'.format(self.__len__())
-        fmt_str += '    Root Location: {}\n'.format(self.root)
+        fmt_str += '    Root Location: {}\n'.format(self.roots)
         tmp = '    Transforms (if any): '
         fmt_str += '{0}{1}\n'.format(tmp, self.transform.__repr__().replace('\n', '\n' + ' ' * len(tmp)))
         tmp = '    Target Transforms (if any): '
