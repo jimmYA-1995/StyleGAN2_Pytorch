@@ -43,8 +43,10 @@ def data_sampler(dataset, shuffle, distributed):
     else:
         return data.SequentialSampler(dataset)
 
-def get_dataloader(config, distributed=True):
-    
+def get_dataloader(config, args=None, distributed=True):
+
+    batch_size = args.batch if args and args.batch else config.TRAIN.BATCH_SIZE_PER_GPU
+        
     trf = [
         transforms.ToTensor(),
         transforms.Normalize([0.5] * (3 + config.MODEL.EXTRA_CHANNEL),
@@ -66,7 +68,7 @@ def get_dataloader(config, distributed=True):
     # TODO: load dataset into shared memory 
     loader = data.DataLoader(
         dataset,
-        batch_size=config.TRAIN.BATCH_SIZE_PER_GPU, ##
+        batch_size=batch_size,
         num_workers=config.WORKERS,
         sampler=data_sampler(dataset, shuffle=True, distributed=distributed),
         drop_last=True,
