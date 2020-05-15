@@ -139,7 +139,7 @@ class MultiChannelDataset(Dataset):
     
     def __getitem__(self, index):
         if self.load_in_mem:
-            img = self.data[index]
+            concat_img = self.data[index]
             target = self.labels[index]
         else:
             path = self.img_paths[index % (self.length // 2)]
