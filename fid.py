@@ -1,4 +1,5 @@
 import argparse
+import logging
 import pickle
 
 from pathlib import Path
@@ -12,11 +13,12 @@ import matplotlib.pyplot as plt
 
 from models import Generator
 from calc_inception import load_patched_inception_v3
-
+from misc import parse_args
+from config import config, update_config
 from run_training import get_dataloader
 
 @torch.no_grad()
-def extract_feature_from_real_images(args, inception, device):
+def extract_feature_from_real_images(config, args, inception, device):
     
     def sample_data(loader):
         while True:
@@ -24,10 +26,7 @@ def extract_feature_from_real_images(args, inception, device):
                 yield batch
     
     print("getting dataloader of real images...")
-    if args.extra_channels == 2:
-        loader = get_dataloader(args.path, args.size, args.batch, args.extra_channels, suffix='train2017', distributed=False)
-    else:
-        loader = get_dataloader(args.path, args.size, args.batch, args.extra_channels, distributed=False)
+    loader = get_dataloader(config, args=args, distributed=False)
     loader = sample_data(loader)
     print('loading dataloader complete')
     n_batch = args.n_sample // args.batch
@@ -54,7 +53,7 @@ def extract_feature_from_real_images(args, inception, device):
 
 
 @torch.no_grad()
-def extract_feature_from_samples(
+def extract_feature_from_ckpt(
     generator, inception, truncation, truncation_latent, batch_size, n_sample, device
 ):
     n_batch = n_sample // batch_size
@@ -66,7 +65,7 @@ def extract_feature_from_samples(
         if batch==0:
             continue
         latent = torch.randn(batch, 512, device=device)
-        img, _ = g([latent]) ## , truncation=truncation, truncation_latent=truncation_latent)
+        img, _ = generator([latent]) ## , truncation=truncation, truncation_latent=truncation_latent)
         feat = inception(img[:, :3, :, :])[0].view(img.shape[0], -1) ## fix to skeleton_channel = 3
         features.append(feat.to('cpu'))
     
@@ -100,57 +99,36 @@ def calc_fid(sample_mean, sample_cov, real_mean, real_cov, eps=1e-6):
     return fid
 
 
-# def main(args)
-
-
-if __name__ == '__main__':
-    device = 'cuda'
-    import sys
-    parser = argparse.ArgumentParser()
-
-    parser.add_argument('--truncation', type=float, default=1)
-    parser.add_argument('--truncation_mean', type=int, default=4096)
-    parser.add_argument('--batch', type=int, default=64)
-    parser.add_argument('--n_sample', type=int, default=50000)
-    parser.add_argument('--size', type=int, default=256)
-    parser.add_argument('--inception', type=str, default=None)
-    parser.add_argument('ckpt', metavar='CHECKPOINT', help='model ckpt or dir')
-    parser.add_argument('--path', type=str, default=None, help='path to dataset')
-    parser.add_argument('--extra_channels', type=int, default=3)
-
-    args = parser.parse_args()
-    assert args.inception or args.path, "inception pkl file or dataset path required"
-    
-    args.ckpt = Path(args.ckpt)
-    
+def fid(config, args):
     if args.ckpt.is_dir():
-        print(f'calculating ckpt in directory {str(args.ckpt)}')
+        logging.info(f'calculating ckpt in directory {str(args.ckpt)}')
         ckpts = sorted(list(args.ckpt.glob('*.pt')))
         file_path = args.ckpt / 'fid.txt'
         plot_path = args.ckpt / 'fid.png'
     elif args.ckpt.is_file():
         ckpts = [args.ckpt]
-        file_path = Path('fid_result.txt')
+        file_path = Path(args.ckpt) / '-fid_result.txt'
         plot_path = None
     else:
         raise FileNotFoundError("something wrong with ckpt path")
-    print(f"calculate the following {len(ckpts)} ckpt files: {[str(ckpt) for ckpt in ckpts]}")
+    logging.info(f"calculate the following {len(ckpts)} ckpt files: {[str(ckpt) for ckpt in ckpts]}")
         
     inception = nn.DataParallel(load_patched_inception_v3()).to(device)
     inception.eval()
     
     if args.inception is not None:
-        print("load inception from cache file")
+        logging.info("load inception from cache file")
         with open(args.inception, 'rb') as f:
             embeds = pickle.load(f)
             real_mean = embeds['mean']
             real_cov = embeds['cov']
     else:
-        real_mean, real_cov = extract_feature_from_real_images(args, inception, device)
-        print("save inception cache to inception_cache.pkl...")
+        logging.info('calculating inception ...')
+        real_mean, real_cov = extract_feature_from_real_images(config, args, inception, device)
+        logging.info("save inception cache to inception_cache.pkl...")
         with open('inception_cache.pkl', 'wb') as f:
             pickle.dump(dict(mean=real_mean, cov=real_cov), f)
-    print("complete")
+    logging.info("complete")
     
     
 
@@ -161,7 +139,8 @@ if __name__ == '__main__':
         ckpt = torch.load(ckpt)
         
         # latent_dim, label_size, resolution
-        g = Generator(512, 0, 256, extra_channels=args.extra_channels).to(device)
+        g = Generator(config.MODEL.LATENT_SIZE, 0, config.RESOLUTION,
+                      extra_channels=config.MODEL.EXTRA_CHANNEL).to(device)
         g.load_state_dict(ckpt['g_ema'])
         g = nn.DataParallel(g)
         g.eval()
@@ -172,7 +151,7 @@ if __name__ == '__main__':
         else:
             mean_latent = None
 
-        features = extract_feature_from_samples(
+        features = extract_feature_from_ckpt(
             g, inception, args.truncation, mean_latent, args.batch, args.n_sample, device
         ).numpy()
         print(f'extracted {features.shape[0]} features')
@@ -193,4 +172,27 @@ if __name__ == '__main__':
         plt.xlabel('k-iterations')
         plt.ylabel('fid')
         plt.savefig(plot_path)
+
+
+if __name__ == '__main__':
+    device = 'cuda'
+    import sys
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument('--truncation', type=float, default=1)
+    parser.add_argument('--truncation_mean', type=int, default=4096)
+    parser.add_argument("--cfg", required=True, help="path to the configuration file")
+    parser.add_argument('--batch', type=int, default=64)
+    parser.add_argument('--n_sample', type=int, default=50000)
+    parser.add_argument('--size', type=int, default=256)
+    parser.add_argument('--inception', type=str, default=None)
+    parser.add_argument('ckpt', metavar='CHECKPOINT', help='model ckpt or dir')
+#     parser.add_argument('--extra_channels', type=int, default=3)
+
+    args = parser.parse_args()
+    update_config(config, args)
+    args.ckpt = Path(args.ckpt)
+    fid(config, args)
+    
+
         
