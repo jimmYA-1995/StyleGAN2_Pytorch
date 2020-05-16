@@ -63,9 +63,12 @@ def get_dataloader(config, args=None, distributed=True):
         print(f'total dataset: {len(dataset)} (flip: {config.DATASET.FLIP},'
               f'load in memory: {config.DATASET.LOAD_IN_MEM})')
     elif config.DATASET.DATASET == "MultiResolutionDataset":
-        dataset = MultiResolutionDataset(roots, transform, resolution)
-    # elif config.DATASET.DATASET == "ImageFolderDataset": 
-    #
+        print("using multiResolution(original 3 channels) dataset")
+        dataset = MultiResolutionDataset(config.DATASET.ROOTS[0], transform, config.RESOLUTION)
+    elif config.DATASET.DATASET == "ImageFolderDataset":
+        dataset = ImageFolderDataset(config.DATASET.ROOTS[0], transform, config.RESOLUTION)
+    else:
+        raise RuntimeError("unsupported dataset")
     
     # TODO: load dataset into shared memory 
     loader = data.DataLoader(
@@ -134,7 +137,7 @@ class Trainer():
         
         self.n_mlp = config.MODEL.N_MLP
         self.latent = config.MODEL.LATENT_SIZE
-        self.extra_channels = config.MODEL.EXTRA_CHANNEL
+        # self.extra_channels = config.MODEL.EXTRA_CHANNEL
         self.batch = config.TRAIN.BATCH_SIZE_PER_GPU
         self.mixing = config.TRAIN.STYLE_MIXING_PROB
         self.r1 = config.TRAIN.R1
@@ -153,9 +156,9 @@ class Trainer():
         print(f"get dataloader complete ({time() - t})")
         
         # Define model
-        self.generator = Generator(self.latent, 0, self.resolution, extra_channels=self.extra_channels, is_training=True).to(self.device)
-        self.discriminator = Discriminator(0, self.resolution, extra_channels=self.extra_channels).to(self.device)
-        self.g_ema = Generator(self.latent, 0, self.resolution, extra_channels=self.extra_channels, is_training=False).to(self.device)    
+        self.generator = Generator(self.latent, 0, self.resolution, extra_channels=config.MODEL.EXTRA_CHANNEL, is_training=True).to(self.device)
+        self.discriminator = Discriminator(0, self.resolution, extra_channels=config.MODEL.EXTRA_CHANNEL).to(self.device)
+        self.g_ema = Generator(self.latent, 0, self.resolution, extra_channels=config.MODEL.EXTRA_CHANNEL, is_training=False).to(self.device)    
         self.g_ema.eval()
         accumulate(self.g_ema, self.generator, 0)
         
@@ -242,7 +245,10 @@ class Trainer():
         # start training
         for i in pbar:
             s = time()
-            real_img = next(loader)[0] ###
+            real_img = next(loader) ###
+            if isinstance(real_img, (tuple, list)):
+                # only feed data for now. (unconditional)
+                real_img = real_img[0]
             real_img = real_img.to(self.device)
 
             requires_grad(self.generator, False)
@@ -411,7 +417,8 @@ if __name__ == '__main__':
     args = parse_args()
     update_config(config, args)
     
-    print("CUDA VISIBLE DEVICES: ", os.environ['CUDA_VISIBLE_DEVICES'])
+    if 'CUDA_VISIBLE_DEVICES' in os.environ:
+        print("CUDA VISIBLE DEVICES: ", os.environ['CUDA_VISIBLE_DEVICES'])
     n_gpu = torch.cuda.device_count()
     if args.local_rank >= n_gpu:
         raise RuntimeError('Recommend one process per device')

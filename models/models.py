@@ -72,7 +72,7 @@ class Generator(nn.Module):
         if return_latents:
             return images_out, dlatents
         return images_out, None
-        
+
 
 class Discriminator(nn.Module):
     def __init__(
@@ -106,7 +106,8 @@ class Discriminator(nn.Module):
         self.label_out = Dense_layer(nf(0), max(label_size, 1))
 
     def forward(self, images_in, labels_in=None):
-        assert images_in.shape[1] == self.img_channels, "(D) channel unmatched"
+        assert images_in.shape[1] == self.img_channels, \
+               f"(D) channel unmatched. {images_in.shape[1]} v.s. {self.img_channels}"
         x = None
         skip = None
         if self.arch == 'resnet':

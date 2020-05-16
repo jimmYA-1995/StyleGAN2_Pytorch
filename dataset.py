@@ -43,7 +43,7 @@ class MultiResolutionDataset(Dataset):
         img = self.transform(img)
 
         return img
-    
+
 
 def ImageFolderDataset(path, transform=None, resolution=None):
     def image_loader(path):
@@ -51,6 +51,8 @@ def ImageFolderDataset(path, transform=None, resolution=None):
             img = Image.open(path)
             if resolution:
                 img = img.resize((resolution, resolution), Image.ANTIALIAS)
+            if img.mode == 'L':
+                img = img.convert('RGB')
             return img
         except:
             print(f'fail to load the image: {path}')
@@ -87,7 +89,7 @@ def load_images_and_concat(path, resolution, sources, flip=False):
     
     cat_images = np.concatenate(imgs, axis=-1)
     return cat_images
-    
+
 
 class MultiChannelDataset(Dataset):
     """ This dataset concatenate the source images with other 
