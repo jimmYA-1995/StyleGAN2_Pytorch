@@ -1,0 +1,35 @@
+# default configuration is in config/defaults.py 
+# Use CUDA_VISIBLE_DEVICES to control #gpus
+GPUS: (0,1)
+WORKERS: 4
+RESOLUTION: 256
+# PRINT_FREQ
+
+DATASET:
+  DATASET: ImageFolderDataset
+  ROOTS:
+    - '/home/u3534611/data/only_people'
+  SOURCE:
+    - ''
+  LOAD_IN_MEM: false
+  FLIP: false
+  # using builtin randomflip
+
+MODEL:
+  N_MLP: 8
+  LATENT_SIZE: 512
+  CHANNEL_MULTIPLIER: 2
+  EXTRA_CHANNEL: 0
+
+TRAIN:
+  ITERATION: 150000
+  BATCH_SIZE_PER_GPU: 16
+  LR: 0.002
+  R1: 10
+  PATH_REGULARIZE: 2
+  PATH_BATCH_SHRINK: 2
+  G_REG_EVERY: 4
+  D_REG_EVERY: 16
+  STYLE_MIXING_PROB: 0.9
+  # CKPT: 
+
