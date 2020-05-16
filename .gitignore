@@ -2,10 +2,11 @@
 test/
 data/
 *.png
-sample/
 results/
 checkpoint/
 wandb/
+*.out
+inceptions/
 try*
 test*
 

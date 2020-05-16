@@ -1,5 +1,5 @@
 # default configuration is in config/defaults.py 
-GPUS: (0,)
+# Use CUDA_VISIBLE_DEVICES to control #gpus
 WORKERS: 4
 RESOLUTION: 256
 # PRINT_FREQ
@@ -14,7 +14,7 @@ DATASET:
     - 'images'
     - 'skeletons'
     - 'masks'
-  LOAD_IN_MEM: true
+  LOAD_IN_MEM: false
   FLIP: true
 
 MODEL:
@@ -24,7 +24,7 @@ MODEL:
   EXTRA_CHANNEL: 2
 
 TRAIN:
-  ITERATION: 200000
+  ITERATION: 150000
   BATCH_SIZE_PER_GPU: 16
   LR: 0.002
   R1: 10

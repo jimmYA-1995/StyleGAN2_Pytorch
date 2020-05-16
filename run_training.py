@@ -62,8 +62,10 @@ def get_dataloader(config, args=None, distributed=True):
         dataset = MultiChannelDataset(config, transform=transform)
         print(f'total dataset: {len(dataset)} (flip: {config.DATASET.FLIP},'
               f'load in memory: {config.DATASET.LOAD_IN_MEM})')
-    # else:
-    #     dataset = MultiResolutionDataset(roots, transform, resolution)
+    elif config.DATASET.DATASET == "MultiResolutionDataset":
+        dataset = MultiResolutionDataset(roots, transform, resolution)
+    # elif config.DATASET.DATASET == "ImageFolderDataset": 
+    #
     
     # TODO: load dataset into shared memory 
     loader = data.DataLoader(
@@ -408,11 +410,12 @@ class Trainer():
 if __name__ == '__main__':
     args = parse_args()
     update_config(config, args)
-    os.environ['CUDA_VISIBLE_DEVICES'] = ','.join(str(x) for x in config.GPUS)
+    
     print("CUDA VISIBLE DEVICES: ", os.environ['CUDA_VISIBLE_DEVICES'])
-    #n_gpu = int(os.environ['WORLD_SIZE']) if 'WORLD_SIZE' in os.environ else 1
-    n_gpu = len(config.GPUS)
-    args.distributed = False if args.local or n_gpu <= 1 else True
+    n_gpu = torch.cuda.device_count()
+    if args.local_rank >= n_gpu:
+        raise RuntimeError('Recommend one process per device')
+    args.distributed = n_gpu > 1
     
     if args.distributed:
         torch.cuda.set_device(args.local_rank)

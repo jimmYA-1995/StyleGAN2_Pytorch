@@ -60,7 +60,7 @@ def ImageFolderDataset(path, transform=None, resolution=None):
     return ImageFolder(path, transform=transform, loader=image_loader, is_valid_file=check_valid)
 
 
-def load_images_and_concat(path, resolution, sources, flip=False): # is functools.partial needs partial arg a keyword arg?
+def load_images_and_concat(path, resolution, sources, flip=False):
     from torchvision import get_image_backend
     assert get_image_backend() == 'PIL'
     # assert isinstance(paths, (tuple, list))
@@ -125,7 +125,7 @@ class MultiChannelDataset(Dataset):
             for index in tqdm(range(self.length)):
                 path = self.img_paths[index % (self.length // 2)]
                 target = 0 # unconditional for now
-                flip = index >= 2 / self.length
+                flip = index >= (self.length // 2)
                 concat_img = self.loader(path, flip=flip)
                 if self.transform is not None:
                     concat_img = self.transform(concat_img)
@@ -143,7 +143,7 @@ class MultiChannelDataset(Dataset):
             target = self.labels[index]
         else:
             path = self.img_paths[index % (self.length // 2)]
-            flip = index >= 2/self.length
+            flip = index >= (self.length // 2)
             concat_img = self.loader(path, flip=flip)
             target = 0
             
