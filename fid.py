@@ -39,7 +39,10 @@ def extract_feature_from_real_images(config, args, inception, device):
         batch_size = resid if i==n_batch else args.batch
         if batch_size == 0:
             continue
-        imgs = next(loader)[0][:batch_size, :3, :, :].to(device) ###
+        imgs = next(loader)
+        if isinstance(imgs, (tuple, list)):
+            imgs = imgs[0]
+        imgs = imgs[:batch_size, :3, :, :].to(device) ###
         feat = inception(imgs)[0].view(batch_size, -1)
         features.append(feat.to('cpu'))
 
@@ -49,7 +52,6 @@ def extract_feature_from_real_images(config, args, inception, device):
     real_mean = np.mean(features, 0)
     real_cov = np.cov(features, rowvar=False)
     return real_mean, real_cov
-
 
 
 @torch.no_grad()
@@ -193,6 +195,6 @@ if __name__ == '__main__':
     update_config(config, args)
     args.ckpt = Path(args.ckpt)
     fid(config, args)
-    
 
-        
+
+

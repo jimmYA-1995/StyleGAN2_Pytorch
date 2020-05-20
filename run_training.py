@@ -186,6 +186,7 @@ class Trainer():
                 ckpt_name = os.path.basename(config.TRAIN.CKPT)
                 self.start_iter = int(os.path.splitext(ckpt_name)[0])
             except ValueError:
+                logger.info('**** load ckpt failed. start from scratch ****')
                 pass
 
             self.generator.load_state_dict(ckpt['g'])

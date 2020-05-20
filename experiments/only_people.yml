@@ -31,5 +31,5 @@ TRAIN:
   G_REG_EVERY: 4
   D_REG_EVERY: 16
   STYLE_MIXING_PROB: 0.9
-  # CKPT: 
+  CKPT: '' 
 
