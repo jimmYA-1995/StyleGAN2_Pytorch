@@ -47,7 +47,7 @@ def extract_feature_from_real_images(config, args, inception, device):
         features.append(feat.to('cpu'))
 
     features = torch.cat(features, 0).numpy()
-    print(f'complete. total extracted features: {features.shape[0]}')
+    print(f"complete. total extracted features: {features.shape[0]}")
     
     real_mean = np.mean(features, 0)
     real_cov = np.cov(features, rowvar=False)
@@ -134,10 +134,11 @@ def fid(config, args):
     
     
 
-    names, fids = [], []
+    k_iter, fids = [], []
     for ckpt in ckpts:
-        print(f"\r calculating fid of {str(ckpt)}", end="")
-        names.append(int(ckpt.name[5:11])/1000)
+        print(f"calculating fid of {str(ckpt)}")
+        ckpt_name = str(ckpt.name)[5:11]
+        k_iter.append(int(ckpt_name)/1000)
         ckpt = torch.load(ckpt)
         
         # latent_dim, label_size, resolution
@@ -163,14 +164,13 @@ def fid(config, args):
 
         fid = calc_fid(sample_mean, sample_cov, real_mean, real_cov)
         fids.append(fid)
-        print('fid:', fid)
-        
-    with open(file_path, 'a') as f:
-        for name, fid in zip(names, fids):
-            f.write(f'{name}: {fid}\n')
+        with open(file_path, 'a') as f:
+            f.write(f'{ckpt_name}: {fid}\n')
+
+        print(f'{ckpt_name}: {fid}')
 
     if plot_path:
-        plt.plot(names, fids)
+        plt.plot(k_iter, fids)
         plt.xlabel('k-iterations')
         plt.ylabel('fid')
         plt.savefig(plot_path)
