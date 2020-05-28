@@ -109,10 +109,13 @@ def fid(config, args):
         plot_path = args.ckpt / 'fid.png'
     elif args.ckpt.is_file():
         ckpts = [args.ckpt]
-        file_path = Path(args.ckpt) / '-fid_result.txt'
+        file_path = Path(str(Path(args.ckpt).parent) + '-fid_result.txt')
         plot_path = None
     else:
         raise FileNotFoundError("something wrong with ckpt path")
+        
+    if not file_path.exists():
+        file_path.touch()
     logging.info(f"calculate the following {len(ckpts)} ckpt files: {[str(ckpt) for ckpt in ckpts]}")
         
     inception = nn.DataParallel(load_patched_inception_v3()).to(device)
@@ -128,11 +131,11 @@ def fid(config, args):
         logging.info('calculating inception ...')
         real_mean, real_cov = extract_feature_from_real_images(config, args, inception, device)
         logging.info("save inception cache to inception_cache.pkl...")
-        with open('inception_cache.pkl', 'wb') as f:
+        if args.inception_out_dir and Path(args.inception_out_dir).is_dir():
+            inception_output_dir = Path(args.inception_out_dir) / 'inception_cache.pkl'
+        with open(inception_output_dir, 'wb') as f:
             pickle.dump(dict(mean=real_mean, cov=real_cov), f)
     logging.info("complete")
-    
-    
 
     k_iter, fids = [], []
     for ckpt in ckpts:
@@ -164,7 +167,7 @@ def fid(config, args):
 
         fid = calc_fid(sample_mean, sample_cov, real_mean, real_cov)
         fids.append(fid)
-        with open(file_path, 'a') as f:
+        with open(file_path, 'a+') as f:
             f.write(f'{ckpt_name}: {fid}\n')
 
         print(f'{ckpt_name}: {fid}')
@@ -188,6 +191,7 @@ if __name__ == '__main__':
     parser.add_argument('--n_sample', type=int, default=50000)
     parser.add_argument('--size', type=int, default=256)
     parser.add_argument('--inception', type=str, default=None)
+    parser.add_argument('--inception_out_dir', type=str, default=None)
     parser.add_argument('ckpt', metavar='CHECKPOINT', help='model ckpt or dir')
 #     parser.add_argument('--extra_channels', type=int, default=3)
 
