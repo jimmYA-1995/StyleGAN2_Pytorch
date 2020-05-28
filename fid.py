@@ -132,7 +132,6 @@ def fid(config, args):
             pickle.dump(dict(mean=real_mean, cov=real_cov), f)
     logging.info("complete")
     
-    
 
     names, fids = [], []
     for ckpt in ckpts:
