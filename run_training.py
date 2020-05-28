@@ -346,7 +346,8 @@ class Trainer():
                     )
                 )
 
-                if i % 500 == 0:
+                if i == 0 or (i+1) % 1000 == 0:
+                    sample_iter = 'init' if i==0 else str(i).zfill(6)
                     with torch.no_grad():
                         self.g_ema.eval()
                         sample, _ = self.g_ema([sample_z])
@@ -372,7 +373,7 @@ class Trainer():
                             sample = torch.cat(sample, dim=0)
                             utils.save_image(
                                 sample,
-                                self.out_dir / f'samples/fake-{str(i).zfill(6)}.png',
+                                self.out_dir / f'samples/fake-{sample_iter}.png',
                                 nrow=int(self.n_sample ** 0.5) * 3,
                                 normalize=True,
                                 range=(-1, 1),
@@ -381,13 +382,14 @@ class Trainer():
                         else:
                             utils.save_image(
                                 sample,
-                                self.out_dir / f'samples/fake-{str(i).zfill(6)}.png',
+                                self.out_dir / f'samples/fake-{sample_iter}.png',
                                 nrow=int(self.n_sample ** 0.5),
                                 normalize=True,
                                 range=(-1, 1),
                             )
 
-                if i % 2000 == 0:
+                if i == 0 or (i+1) % 2500 == 0:
+                    ckpt_iter = 'init' if i==0 else str(i).zfill(6)
                     torch.save(
                         {
                             'g': g_module.state_dict(),
@@ -396,7 +398,7 @@ class Trainer():
                             'g_optim': self.g_optim.state_dict(),
                             'd_optim': self.d_optim.state_dict(),
                         },
-                        self.out_dir /  f'checkpoints/ckpt-{str(i).zfill(6)}.pt',
+                        self.out_dir /  f'checkpoints/ckpt-{ckpt_iter}.pt',
                     )
 
                 if wandb and self.use_wandb:
