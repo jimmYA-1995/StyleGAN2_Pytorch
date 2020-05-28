@@ -3,6 +3,7 @@ test/
 data/
 *.png
 results/
+experiments/
 checkpoint/
 wandb/
 *.out
