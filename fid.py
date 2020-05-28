@@ -47,7 +47,7 @@ def extract_feature_from_real_images(config, args, inception, device):
         features.append(feat.to('cpu'))
 
     features = torch.cat(features, 0).numpy()
-    print(f'complete. total extracted features: {features.shape[0]}')
+    print(f"complete. total extracted features: {features.shape[0]}")
     
     real_mean = np.mean(features, 0)
     real_cov = np.cov(features, rowvar=False)
@@ -109,10 +109,13 @@ def fid(config, args):
         plot_path = args.ckpt / 'fid.png'
     elif args.ckpt.is_file():
         ckpts = [args.ckpt]
-        file_path = Path(args.ckpt) / '-fid_result.txt'
+        file_path = Path(str(Path(args.ckpt).parent) + '-fid_result.txt')
         plot_path = None
     else:
         raise FileNotFoundError("something wrong with ckpt path")
+        
+    if not file_path.exists():
+        file_path.touch()
     logging.info(f"calculate the following {len(ckpts)} ckpt files: {[str(ckpt) for ckpt in ckpts]}")
         
     inception = nn.DataParallel(load_patched_inception_v3()).to(device)
@@ -128,15 +131,17 @@ def fid(config, args):
         logging.info('calculating inception ...')
         real_mean, real_cov = extract_feature_from_real_images(config, args, inception, device)
         logging.info("save inception cache to inception_cache.pkl...")
-        with open('inception_cache.pkl', 'wb') as f:
+        if args.inception_out_dir and Path(args.inception_out_dir).is_dir():
+            inception_output_dir = Path(args.inception_out_dir) / 'inception_cache.pkl'
+        with open(inception_output_dir, 'wb') as f:
             pickle.dump(dict(mean=real_mean, cov=real_cov), f)
     logging.info("complete")
-    
 
-    names, fids = [], []
+    k_iter, fids = [], []
     for ckpt in ckpts:
-        print(f"\r calculating fid of {str(ckpt)}", end="")
-        names.append(int(ckpt.name[5:11])/1000)
+        print(f"calculating fid of {str(ckpt)}")
+        ckpt_name = str(ckpt.name)[5:11]
+        k_iter.append(int(ckpt_name)/1000)
         ckpt = torch.load(ckpt)
         
         # latent_dim, label_size, resolution
@@ -162,14 +167,13 @@ def fid(config, args):
 
         fid = calc_fid(sample_mean, sample_cov, real_mean, real_cov)
         fids.append(fid)
-        print('fid:', fid)
-        
-    with open(file_path, 'a') as f:
-        for name, fid in zip(names, fids):
-            f.write(f'{name}: {fid}\n')
+        with open(file_path, 'a+') as f:
+            f.write(f'{ckpt_name}: {fid}\n')
+
+        print(f'{ckpt_name}: {fid}')
 
     if plot_path:
-        plt.plot(names, fids)
+        plt.plot(k_iter, fids)
         plt.xlabel('k-iterations')
         plt.ylabel('fid')
         plt.savefig(plot_path)
@@ -187,6 +191,7 @@ if __name__ == '__main__':
     parser.add_argument('--n_sample', type=int, default=50000)
     parser.add_argument('--size', type=int, default=256)
     parser.add_argument('--inception', type=str, default=None)
+    parser.add_argument('--inception_out_dir', type=str, default=None)
     parser.add_argument('ckpt', metavar='CHECKPOINT', help='model ckpt or dir')
 #     parser.add_argument('--extra_channels', type=int, default=3)
 

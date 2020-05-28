@@ -3,12 +3,14 @@ test/
 data/
 *.png
 results/
+experiments/
 checkpoint/
 wandb/
 *.out
 inceptions/
 try*
 test*
+*.pkl
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
