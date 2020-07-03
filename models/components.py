@@ -132,7 +132,7 @@ class Dense_layer(nn.Module):
         ) 
     
     def forward(self, x):
-        assert x.shape[1] == self.in_dim, "unmatched shape. {x.shape[1]} v.s. {self.in_dim}"
+        assert x.shape[1] == self.in_dim, f"unmatched shape. {x.shape[1]} v.s. {self.in_dim}"
         
         x =  F.linear(x, self.w * self.runtime_coeff)
         if self.act.startswith('fused'):
@@ -375,12 +375,11 @@ class FromRGB(nn.Module):
         super(FromRGB, self).__init__()
         
         self.conv = Conv2d_layer(in_channel, out_channel, kernel=1)
-        self.bias = Parameter(torch.zeros(1, out_channel, 1, 1))
-        self.act = FusedLeakyReLU(out_channel)
+        # self.bias = Parameter(torch.zeros(1, out_channel, 1, 1))
+        # self.act = FusedLeakyReLU(out_channel)
         
     def forward(self, rgb_in):
-        out = self.conv(rgb_in) + self.bias
-        return self.act(out)
+        return self.conv(rgb_in)
 
 
 def minibatch_stddev_layer(x, group_size=4, num_new_features=1):
