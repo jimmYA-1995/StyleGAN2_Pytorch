@@ -132,7 +132,7 @@ class Dense_layer(nn.Module):
         ) 
     
     def forward(self, x):
-        assert x.shape[1] == self.in_dim, "unmatched shape. {x.shape[1]} v.s. {self.in_dim}"
+        assert x.shape[1] == self.in_dim, f"unmatched shape. {x.shape[1]} v.s. {self.in_dim}"
         
         x =  F.linear(x, self.w * self.runtime_coeff)
         if self.act.startswith('fused'):
@@ -165,8 +165,8 @@ class Conv2d_layer(nn.Module):
         
         self.out_channel, self.in_channel, self.kernel = out_channel, in_channel, kernel
         self.mode = mode
-        self.use_bias = use_bias
         self.padding = kernel // 2
+        self.use_bias = use_bias
         
         if self.mode == 'up':
             factor = 2
@@ -183,12 +183,8 @@ class Conv2d_layer(nn.Module):
         
         self.w, self.runtime_coeff = get_weight([out_channel, in_channel, kernel, kernel],
                                                 gain=gain, use_wscale=use_wscale, lrmul=lrmul)
-        
         if use_bias:
-            self.bias = Parameter(torch.zeros(1, out_channel, 1, 1))
-            self.act = FusedLeakyReLU(out_channel)
-        else:
-            self.act = ScaledLeakyReLU(0.2)
+            self.bias_act = FusedLeakyReLU(out_channel)
 
     def __repr__(self):
         return (
@@ -211,9 +207,8 @@ class Conv2d_layer(nn.Module):
             return self.blur(x)
         
         if self.use_bias:
-            return self.act(x + self.bias)
-        else:
-            return self.act(x)
+            return self.bias_act(x)
+        return x
 
     
 class Modulated_conv2d_layer(nn.Module):
@@ -304,14 +299,14 @@ class NoiseInjection(nn.Module):
     def __init__(self):
         super(NoiseInjection, self).__init__()
 
-        self.nosie_stength = Parameter(torch.zeros(1))
+        self.noise_strength = Parameter(torch.zeros(1))
 
     def forward(self, x, noise=None):
         if noise is None: # random noise
             batch, _, height, width = x.shape
             noise = x.new_empty(batch, 1, height, width).normal_()
 
-        return x + self.nosie_stength * noise
+        return x + self.noise_strength * noise
             
 
 class Layer(nn.Module):
@@ -375,12 +370,11 @@ class FromRGB(nn.Module):
         super(FromRGB, self).__init__()
         
         self.conv = Conv2d_layer(in_channel, out_channel, kernel=1)
-        self.bias = Parameter(torch.zeros(1, out_channel, 1, 1))
-        self.act = FusedLeakyReLU(out_channel)
+        # self.bias = Parameter(torch.zeros(1, out_channel, 1, 1))
+        # self.act = FusedLeakyReLU(out_channel)
         
     def forward(self, rgb_in):
-        out = self.conv(rgb_in) + self.bias
-        return self.act(out)
+        return self.conv(rgb_in)
 
 
 def minibatch_stddev_layer(x, group_size=4, num_new_features=1):
@@ -405,14 +399,14 @@ class DBlock(nn.Module):
         if architecture == 'skip':
             self.frgb = FromRGB(in_channel)
         else:
-            self.skip = Conv2d_layer(in_channel, out_channel, kernel=1)
+            self.skip = Conv2d_layer(in_channel, out_channel, kernel=1, use_bias=False)
         
         self.scale = Downsample(resample_kernel)
         self.conv = Layer(
-            in_channel, in_channel, resample_kernel=resample_kernel)
+            in_channel, in_channel, resample_kernel=resample_kernel, use_bias=False)
         self.conv_down = Layer(
             in_channel, out_channel, mode='down',
-            resample_kernel=resample_kernel)
+            resample_kernel=resample_kernel, use_bias=False)
     
     def forward(self, latents_in, skip=None):
         if skip is not None:

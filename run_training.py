@@ -21,6 +21,7 @@ except ImportError:
     wandb = None
 
 from misc import parse_args, prepare_training
+from load_weights import load_weights_from_nv
 from models import Generator, Discriminator
 from losses import nonsaturating_loss, path_regularize, logistic_loss, d_r1_loss
 from dataset import MultiResolutionDataset, ImageFolderDataset, MultiChannelDataset
@@ -160,7 +161,7 @@ class Trainer():
         # Define model
         self.generator = Generator(self.latent, 0, self.resolution, extra_channels=config.MODEL.EXTRA_CHANNEL, is_training=True).to(self.device)
         self.discriminator = Discriminator(0, self.resolution, extra_channels=config.MODEL.EXTRA_CHANNEL).to(self.device)
-        self.g_ema = Generator(self.latent, 0, self.resolution, extra_channels=config.MODEL.EXTRA_CHANNEL, is_training=False).to(self.device)    
+        self.g_ema = Generator(self.latent, 0, self.resolution, extra_channels=config.MODEL.EXTRA_CHANNEL, is_training=False).to(self.device)
         self.g_ema.eval()
         accumulate(self.g_ema, self.generator, 0)
         
@@ -184,7 +185,9 @@ class Trainer():
         
         self.total_step = config.TRAIN.ITERATION
         self.start_iter = 0
-        if config.TRAIN.CKPT:
+        if config.MODEL.NV_WEIGHTS_PATH:
+            load_weights_from_nv(self.generator, self.discriminator, self.g_ema, config.MODEL.NV_WEIGHTS_PATH)
+        elif config.TRAIN.CKPT:
             print('load model:', config.TRAIN.CKPT)
             ckpt = torch.load(config.TRAIN.CKPT)
 

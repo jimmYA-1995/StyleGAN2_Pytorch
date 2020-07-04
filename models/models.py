@@ -101,7 +101,7 @@ class Discriminator(nn.Module):
             self.blocks.append(DBlock(nf(res-1), nf(res-2), self.arch))
         
         # output layer
-        self.conv_out = Layer(nf(1)+1, nf(1), kernel=3)
+        self.conv_out = Layer(nf(1)+1, nf(1), kernel=3, use_bias=False)
         self.dense_out = Dense_layer(512 * 4 * 4, nf(0))
         self.label_out = Dense_layer(nf(0), max(label_size, 1))
 
