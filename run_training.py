@@ -24,6 +24,7 @@ from misc import parse_args, prepare_training
 from models import Generator, Discriminator
 from losses import nonsaturating_loss, path_regularize, logistic_loss, d_r1_loss
 from dataset import MultiResolutionDataset, ImageFolderDataset, MultiChannelDataset
+from metrics import FIDTracker
 from config import config, update_config
 from distributed import (
     master_only,
@@ -126,6 +127,7 @@ class Trainer():
         
         # dummy. mod. in the future
         self.device = 'cuda'
+        self.config = config
         self.logger = logger
         self.local_rank = args.local_rank
         self.distributed = args.distributed
@@ -161,6 +163,10 @@ class Trainer():
         self.g_ema = Generator(self.latent, 0, self.resolution, extra_channels=config.MODEL.EXTRA_CHANNEL, is_training=False).to(self.device)    
         self.g_ema.eval()
         accumulate(self.g_ema, self.generator, 0)
+        
+        # init. FID tracker if needed.
+        if get_rank() == 0 and 'fid' in config.EVAL.METRICS.split(','):
+            self.fid_tracker = FIDTracker(config.EVAL.FID, self.loader, self.out_dir, logger)
         
         g_reg_ratio = self.g_reg_every / (self.g_reg_every + 1)
         d_reg_ratio = self.d_reg_every / (self.d_reg_every + 1)
@@ -212,6 +218,7 @@ class Trainer():
             )
 
     def train(self):
+        digits_length = len(str(self.config.TRAIN.ITERATION))
         loader = sample_data(self.loader)
         
         if self.start_iter >= self.total_step:
@@ -327,6 +334,11 @@ class Trainer():
             loss_dict['path_length'] = path_lengths.mean()
 
             accumulate(self.g_ema, g_module, accum)
+            
+            if get_rank() == 0 and (i == 0 or (i+1) % self.config.EVAL.FID.EVERY == 0):
+                k_iter = (i+1) / 1000
+                self.g_ema.eval()
+                self.fid_tracker.calc_fid(self.g_ema, k_iter, save=True)
 
             loss_reduced = reduce_loss_dict(loss_dict)
 
@@ -347,7 +359,7 @@ class Trainer():
                 )
 
                 if i == 0 or (i+1) % 1000 == 0:
-                    sample_iter = 'init' if i==0 else str(i).zfill(6)
+                    sample_iter = 'init' if i==0 else str(i).zfill(digits_length)
                     with torch.no_grad():
                         self.g_ema.eval()
                         sample, _ = self.g_ema([sample_z])
@@ -388,8 +400,8 @@ class Trainer():
                                 range=(-1, 1),
                             )
 
-                if i == 0 or (i+1) % 2500 == 0:
-                    ckpt_iter = 'init' if i==0 else str(i).zfill(6)
+                if i == 0 or (i+1) % self.config.TRAIN.SAVE_CKPT_EVERY == 0:
+                    ckpt_iter = str(i+1).zfill(digits_length)
                     torch.save(
                         {
                             'g': g_module.state_dict(),
@@ -400,6 +412,12 @@ class Trainer():
                         },
                         self.out_dir /  f'checkpoints/ckpt-{ckpt_iter}.pt',
                     )
+                    ckpt_dir = self.out_dir / 'checkpoints'
+                    ckpt_paths = list(ckpt_dir.glob('*.pt'))
+                    if len(ckpt_paths) > self.config.TRAIN.CKPT_MAX_KEEP+1:
+                        ckpt_idx = sorted([int(str(p.name)[5:5+digits_length]) \
+                                           for p in ckpt_paths])
+                        os.remove(ckpt_dir / f'ckpt-{str(ckpt_idx[1]).zfill(digits_length)}.pt')
 
                 if wandb and self.use_wandb:
                     wandb.log(
@@ -459,3 +477,6 @@ if __name__ == '__main__':
     
     logger.info("start training")
     trainer.train()
+    
+    if get_rank() == 0:
+        trainer.fid_tracker.plot_fid()
