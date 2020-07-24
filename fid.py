@@ -25,16 +25,16 @@ def extract_feature_from_real_images(config, args, inception, device):
             for batch in loader:
                 yield batch
     
-    print("getting dataloader of real images...")
+    logging.info("getting dataloader of real images...")
     loader = get_dataloader(config, args=args, distributed=False)
     loader = sample_data(loader)
-    print('loading dataloader complete')
+    logging.info('loading dataloader complete')
     n_batch = args.n_sample // args.batch
     resid = args.n_sample % args.batch
     
     features = []
 
-    print('extract features from real images...')
+    logging.info('extract features from real images...')
     for i in tqdm(range(n_batch + 1)):
         batch_size = resid if i==n_batch else args.batch
         if batch_size == 0:
@@ -47,7 +47,7 @@ def extract_feature_from_real_images(config, args, inception, device):
         features.append(feat.to('cpu'))
 
     features = torch.cat(features, 0).numpy()
-    print(f"complete. total extracted features: {features.shape[0]}")
+    logging.info(f"complete. total extracted features: {features.shape[0]}")
     
     real_mean = np.mean(features, 0)
     real_cov = np.cov(features, rowvar=False)
@@ -79,7 +79,7 @@ def calc_fid(sample_mean, sample_cov, real_mean, real_cov, eps=1e-6):
     cov_sqrt, _ = linalg.sqrtm(sample_cov @ real_cov, disp=False)
 
     if not np.isfinite(cov_sqrt).all():
-        print('product of cov matrices is singular')
+        logging.info('product of cov matrices is singular')
         offset = np.eye(sample_cov.shape[0]) * eps
         cov_sqrt = linalg.sqrtm((sample_cov + offset) @ (real_cov + offset))
 
@@ -102,21 +102,24 @@ def calc_fid(sample_mean, sample_cov, real_mean, real_cov, eps=1e-6):
 
 
 def fid(config, args):
-    if args.ckpt.is_dir():
-        logging.info(f'calculating ckpt in directory {str(args.ckpt)}')
-        ckpts = sorted(list(args.ckpt.glob('*.pt')))
-        file_path = args.ckpt / 'fid.txt'
-        plot_path = args.ckpt / 'fid.png'
-    elif args.ckpt.is_file():
-        ckpts = [args.ckpt]
-        file_path = Path(str(Path(args.ckpt).parent) + '-fid_result.txt')
-        plot_path = None
-    else:
-        raise FileNotFoundError("something wrong with ckpt path")
+    if args.ckpt:
+        args.ckpt = Path(args.ckpt)
         
-    if not file_path.exists():
-        file_path.touch()
-    logging.info(f"calculate the following {len(ckpts)} ckpt files: {[str(ckpt) for ckpt in ckpts]}")
+        if args.ckpt.is_dir():
+            logging.info(f'calculating ckpt in directory {str(args.ckpt)}')
+            ckpts = sorted(list(args.ckpt.glob('*.pt')))
+            file_path = args.ckpt / 'fid.txt'
+            plot_path = args.ckpt / 'fid.png'
+        elif args.ckpt.is_file():
+            ckpts = [args.ckpt]
+            file_path = Path(str(Path(args.ckpt).parent) + '-fid_result.txt')
+            plot_path = None
+        else:
+            raise FileNotFoundError("something wrong with ckpt path")
+
+        if not file_path.exists():
+            file_path.touch()
+        logging.info(f"calculate the following {len(ckpts)} ckpt files: {[str(ckpt) for ckpt in ckpts]}")
         
     inception = nn.DataParallel(load_patched_inception_v3()).to(device)
     inception.eval()
@@ -129,6 +132,7 @@ def fid(config, args):
             real_cov = embeds['cov']
     else:
         logging.info('calculating inception ...')
+        inception_output_dir = Path('inception_cache.pkl')
         real_mean, real_cov = extract_feature_from_real_images(config, args, inception, device)
         logging.info("save inception cache to inception_cache.pkl...")
         if args.inception_out_dir and Path(args.inception_out_dir).is_dir():
@@ -136,10 +140,17 @@ def fid(config, args):
         with open(inception_output_dir, 'wb') as f:
             pickle.dump(dict(mean=real_mean, cov=real_cov), f)
     logging.info("complete")
-
+    
+    logging.debug(f"args.ckpt: {args.ckpt}. {bool(not args.ckpt)}")
+    if not args.ckpt:
+        print(real_mean)
+        print(real_cov)
+        logging.info(f'[logging] mean: {real_mean}, covariance: {real_cov}')
+        return
+    
     k_iter, fids = [], []
     for ckpt in ckpts:
-        print(f"calculating fid of {str(ckpt)}")
+        logging.info(f"calculating fid of {str(ckpt)}")
         ckpt_name = str(ckpt.name)[5:11]
         k_iter.append(int(ckpt_name)/1000)
         ckpt = torch.load(ckpt)
@@ -160,7 +171,7 @@ def fid(config, args):
         features = extract_feature_from_ckpt(
             g, inception, args.truncation, mean_latent, args.batch, args.n_sample, device
         ).numpy()
-        print(f'extracted {features.shape[0]} features')
+        logging.info(f'extracted {features.shape[0]} features')
 
         sample_mean = np.mean(features, 0)
         sample_cov = np.cov(features, rowvar=False)
@@ -170,7 +181,7 @@ def fid(config, args):
         with open(file_path, 'a+') as f:
             f.write(f'{ckpt_name}: {fid}\n')
 
-        print(f'{ckpt_name}: {fid}')
+        logging.info(f'{ckpt_name}: {fid}')
 
     if plot_path:
         plt.plot(k_iter, fids)
@@ -192,12 +203,17 @@ if __name__ == '__main__':
     parser.add_argument('--size', type=int, default=256)
     parser.add_argument('--inception', type=str, default=None)
     parser.add_argument('--inception_out_dir', type=str, default=None)
-    parser.add_argument('ckpt', metavar='CHECKPOINT', help='model ckpt or dir')
+    parser.add_argument('--ckpt', type=str, default="", metavar='CHECKPOINT', help='model ckpt or dir')
+    parser.add_argument("--log", type=str, default="INFO", help="log level")
 #     parser.add_argument('--extra_channels', type=int, default=3)
 
     args = parser.parse_args()
+    numeric_level = getattr(logging, args.log.upper(), None)
+    if not isinstance(numeric_level, int):
+        raise ValueError(f'Invalid log level: {loglevel}')
+        
+    logging.basicConfig(level=numeric_level)
     update_config(config, args)
-    args.ckpt = Path(args.ckpt)
     fid(config, args)
 
 
