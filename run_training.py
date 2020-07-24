@@ -55,8 +55,8 @@ def get_dataloader(config, args=None, distributed=True):
                              [0.5] * (3 + config.MODEL.EXTRA_CHANNEL),
                              inplace=True),
     ]
-    if config.MODEL.EXTRA_CHANNEL == 0:
-        trf.insert(0, transforms.RandomHorizontalFlip())
+    #if config.MODEL.EXTRA_CHANNEL == 0:
+    #    trf.insert(0, transforms.RandomHorizontalFlip())
     transform = transforms.Compose(trf)
     
     if config.DATASET.DATASET == "MultiChannelDataset":
@@ -149,6 +149,7 @@ class Trainer():
         self.path_regularize = config.TRAIN.PATH_REGULARIZE
         self.path_batch_shrink = config.TRAIN.PATH_BATCH_SHRINK
         
+        self.fid_tracker = None
         
         # datset
         print("get dataloader ...")
@@ -168,6 +169,7 @@ class Trainer():
         # init. FID tracker if needed.
         if get_rank() == 0 and 'fid' in config.EVAL.METRICS.split(','):
             self.fid_tracker = FIDTracker(config.EVAL.FID, self.loader, self.out_dir, logger)
+            print(self.fid_tracker)
         
         g_reg_ratio = self.g_reg_every / (self.g_reg_every + 1)
         d_reg_ratio = self.d_reg_every / (self.d_reg_every + 1)
@@ -338,7 +340,8 @@ class Trainer():
 
             accumulate(self.g_ema, g_module, accum)
             
-            if get_rank() == 0 and (i == 0 or (i+1) % self.config.EVAL.FID.EVERY == 0):
+            if get_rank() == 0 and self.fid_tracker is not None and \
+                (i == 0 or (i+1) % self.config.EVAL.FID.EVERY == 0):
                 k_iter = (i+1) / 1000
                 self.g_ema.eval()
                 self.fid_tracker.calc_fid(self.g_ema, k_iter, save=True)
@@ -436,6 +439,7 @@ class Trainer():
                             'Path Length': path_length_val,
                         }
                     )
+
 
 if __name__ == '__main__':
     args = parse_args()
