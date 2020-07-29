@@ -485,5 +485,5 @@ if __name__ == '__main__':
     logger.info("start training")
     trainer.train()
     
-    if get_rank() == 0:
+    if get_rank() == 0 and getattr(trainer, 'fid_tracker') is not None:
         trainer.fid_tracker.plot_fid()
