@@ -187,25 +187,68 @@ class Trainer():
         
         self.total_step = config.TRAIN.ITERATION
         self.start_iter = 0
-        if config.MODEL.NV_WEIGHTS_PATH:
-            load_weights_from_nv(self.generator, self.discriminator, self.g_ema, config.MODEL.NV_WEIGHTS_PATH)
+        if config.TRAIN.NV_WEIGHTS_PATH:
+            load_weights_from_nv(self.generator, self.discriminator, self.g_ema, config.TRAIN.NV_WEIGHTS_PATH)
         elif config.TRAIN.CKPT:
             print('load model:', config.TRAIN.CKPT)
             ckpt = torch.load(config.TRAIN.CKPT)
 
             try:
-                ckpt_name = os.path.basename(config.TRAIN.CKPT)
-                self.start_iter = int(os.path.splitext(ckpt_name)[0])
+                self.start_iter = int(Path(config.TRAIN.CKPT).stem.split('-')[1])
             except ValueError:
                 logger.info('**** load ckpt failed. start from scratch ****')
                 pass
+            
+            try:
+                self.generator.load_state_dict(ckpt['g'])
+                self.discriminator.load_state_dict(ckpt['d'])
+                self.g_ema.load_state_dict(ckpt['g_ema'])
 
-            self.generator.load_state_dict(ckpt['g'])
-            self.discriminator.load_state_dict(ckpt['d'])
-            self.g_ema.load_state_dict(ckpt['g_ema'])
-
-            self.g_optim.load_state_dict(ckpt['g_optim'])
-            self.d_optim.load_state_dict(ckpt['d_optim'])
+                self.g_optim.load_state_dict(ckpt['g_optim'])
+                self.d_optim.load_state_dict(ckpt['d_optim'])
+            except RuntimeError:
+                logger.warn(" ******* using hacky way to load partial weight to model ******* ")
+                try:
+                    for k,v in self.generator.named_parameters():
+                        if 'trgb' in k:
+                            if 'conv.w' in k:
+                                with torch.no_grad():
+                                    v[:3, ...].copy_(ckpt['g'][k])
+                            elif 'bias' in k:
+                                with torch.no_grad():
+                                    v[:, :3, ...].copy_(ckpt['g'][k])
+                            else:
+                                with torch.no_grad():
+                                    v.copy_(ckpt['g'][k])
+                        else:
+                            with torch.no_grad():
+                                v.copy_(ckpt['g'][k])
+                            v.requires_grad = False
+                                
+                    for k,v in self.discriminator.named_parameters():
+                        if 'frgb' in k:
+                            if 'conv.w' in k:
+                                with torch.no_grad():
+                                    v[:, :3, ...].copy_(ckpt['d'][k])
+                        else:
+                            with torch.no_grad():
+                                v.copy_(ckpt['d'][k])
+                            v.requires_grad = False
+                                
+                    for k,v in self.g_ema.named_parameters():
+                        if 'trgb' in k:
+                            if 'conv.w' in k:
+                                with torch.no_grad():
+                                    v[:3, ...].copy_(ckpt['g_ema'][k])
+                            elif 'bias' in k:
+                                with torch.no_grad():
+                                    v[:, :3, ...].copy_(ckpt['g_ema'][k])
+                        else:
+                            with torch.no_grad():
+                                v.copy_(ckpt['g_ema'][k])
+                except RuntimeError:
+                    logger.error(" ***** fail to load partial weights to models ***** ")
+                     
 
         if self.distributed:
             self.generator = nn.parallel.DistributedDataParallel(
@@ -223,7 +266,10 @@ class Trainer():
             )
 
     def train(self):
-        digits_length = len(str(self.config.TRAIN.ITERATION))
+        cfg_d = self.config.DATASET
+        cfg_t = self.config.TRAIN
+        
+        digits_length = len(str(cfg_t.ITERATION))
         loader = sample_data(self.loader)
         
         if self.start_iter >= self.total_step:
@@ -364,33 +410,27 @@ class Trainer():
                     )
                 )
 
-                if i == 0 or (i+1) % 1000 == 0:
+                if i == 0 or (i+1) % cfg_t.SAMPLE_EVERY == 0:
                     sample_iter = 'init' if i==0 else str(i).zfill(digits_length)
                     with torch.no_grad():
                         self.g_ema.eval()
                         sample, _ = self.g_ema([sample_z])
                         
-                        if sample.shape[1] == 5:
-                            # track range for debug
-                            if i == 0:
-                                mask_sample = sample[:,3,:,:].cpu().numpy()
-                                sk_sample = sample[:,4,:,:].cpu().numpy()
-                                self.logger.debug("make range: ", mask_sample.max(), mask_sample.min())
-                                self.logger.debug("sk range: ", sk_sample.max(), sk_sample.min())
-                            
-                            # display overlap images
-                            s_i = sample[:,:3,:,:]
-                            s_s = sample[:,3:4,:,:].repeat((1,3,1,1))
-                            s_m = sample[:,4:,:,:].repeat((1,3,1,1))
-                            
-                            sample = []
-                            for img,sk,mk in zip(s_i, s_s, s_m):
-                                sample.append(img[None, ...])
-                                sample.append(sk[None, ...])
-                                sample.append(mk[None, ...])
-                            sample = torch.cat(sample, dim=0)
+                        if cfg_d.DATASET == 'MultiChannelDataset':
+                            s = 0
+                            samples = []
+                            for i, src in enumerate(cfg_d.SOURCE):
+                                e = s + cfg_d.CHANNELS[i]
+                                
+                                _sample = sample[:,s:e,:,:]
+                                if cfg_d.CHANNELS[i] == 1:
+                                    _sample = _sample.repeat((1,3,1,1))
+                                    
+                                samples.append(_sample)
+                                s = e
+                                
                             utils.save_image(
-                                sample,
+                                list(torch.cat(samples, dim=2).unbind(0)),
                                 self.out_dir / f'samples/fake-{sample_iter}.png',
                                 nrow=int(self.n_sample ** 0.5) * 3,
                                 normalize=True,
@@ -406,7 +446,7 @@ class Trainer():
                                 range=(-1, 1),
                             )
 
-                if i == 0 or (i+1) % self.config.TRAIN.SAVE_CKPT_EVERY == 0:
+                if i == 0 or (i+1) % cfg_t.SAVE_CKPT_EVERY == 0:
                     ckpt_iter = str(i+1).zfill(digits_length)
                     torch.save(
                         {
@@ -420,7 +460,7 @@ class Trainer():
                     )
                     ckpt_dir = self.out_dir / 'checkpoints'
                     ckpt_paths = list(ckpt_dir.glob('*.pt'))
-                    if len(ckpt_paths) > self.config.TRAIN.CKPT_MAX_KEEP+1:
+                    if len(ckpt_paths) > cfg_t.CKPT_MAX_KEEP+1:
                         ckpt_idx = sorted([int(str(p.name)[5:5+digits_length]) \
                                            for p in ckpt_paths])
                         os.remove(ckpt_dir / f'ckpt-{str(ckpt_idx[1]).zfill(digits_length)}.pt')
@@ -462,18 +502,18 @@ if __name__ == '__main__':
         prepare_training = master_only(prepare_training)
         print("print function overriden")
     
-    logger, args.out_dir = prepare_training(config, args.cfg)
+    logger, args.out_dir = prepare_training(config, args.cfg, debug=args.debug)
     
     
     if not logger:
-        log_format = '<{}> %(levelname)-8s %(asctime)-15s %(message)s'.format(get_rank())
+        # add process info to slave process
+        log_format = '<SLAVE{}> %(levelname)-8s %(asctime)-15s %(message)s'.format(get_rank())
         logging.basicConfig(level=logging.WARN,
                             format=log_format)
         logger = logging.getLogger()
 
-    logger.info("Only keep logs in log file on master")
-
-
+    logger.info("Only keep logs of master in log file")
+    
     logger.info("initialize trainer...")
     t = time()
     trainer = Trainer(args, config, logger)
