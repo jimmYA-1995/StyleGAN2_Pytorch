@@ -1,8 +1,9 @@
 # default configuration is in config/defaults.py 
+OUTPUT_DIR: 'results'
+NUM_SAMPLE: 64
 # Use CUDA_VISIBLE_DEVICES to control #gpus
 WORKERS: 4
 RESOLUTION: 256
-# PRINT_FREQ
 
 DATASET:
   DATASET: MultiChannelDataset
@@ -14,6 +15,10 @@ DATASET:
     - 'images'
     - 'skeletons'
     - 'masks'
+  CHANNELS:
+    - 3
+    - 1
+    - 1
   LOAD_IN_MEM: false
   FLIP: true
 
@@ -32,6 +37,18 @@ TRAIN:
   PATH_BATCH_SHRINK: 2
   G_REG_EVERY: 4
   D_REG_EVERY: 16
+  SAMPLE_EVERY: 1000
   STYLE_MIXING_PROB: 0.9
-  # CKPT: 
+  NV_WEIGHTS_PATH: ''
+  CKPT: 
+  SAVE_CKPT_EVERY: 2500
+  CKPT_MAX_KEEP: 10
+  SAMPLE_EVERY: 1000
+EVAL:
+  METRICS: 'fid'
+  FID:
+    EVERY: 2500
+    BATCH_SIZE: 64
+    N_SAMPLE: 50000
+    INCEPTION_CACHE: ''
 
