@@ -7,6 +7,30 @@ from pathlib import Path
 from pprint import pprint
 
 
+class CustomFormatter(logging.Formatter):
+    """ Logging Formatter  to add colors and count warning / errors"""
+    
+    gray = "\x1b[38;21m"
+    green = "\x1b[32;21m"
+    yellow = "\x1b[33;21m"
+    red = "\x1b[31;21m"
+    bold_red = "\x1b[31;1m"
+    reset = "\x1b[0m"
+    format = "<MASTER> %(levelname)-8s - %(asctime)-15s - %(message)s (%(filename)s:%(lineno)d)"
+    
+    FORMATS = {
+        'DEBUG': gray + format + reset,
+        'INFO': green + format + reset,
+        'WARNING': yellow + format + reset,
+        'ERROR': red + format + reset,
+        'CRITICAL': bold_red + format + reset,
+    }
+    
+    def format(self, record):
+        log_fmt = self.FORMATS[record.levelname]
+        formatter = logging.Formatter(log_fmt)
+        return formatter.format(record)
+
 def parse_args(arg=None):
     parser = argparse.ArgumentParser(description='arguments')
     parser.add_argument("--debug", action='store_true', default=False, help="whether to use debug mode")
@@ -22,20 +46,23 @@ def parse_args(arg=None):
 
     return args
 
-def create_logger(out_dir):
-    final_log_file = out_dir / 'experiment.log'
-    head = '%(levelname)-8s %(asctime)-15s %(message)s'
-    logging.basicConfig(filename=str(final_log_file),
-                        format=head)
+def create_logger(out_dir, level='INFO'):
+    log_file = out_dir / 'experiment.log'
+    head = "%(levelname)-8s - %(asctime)-15s - %(message)s (%(filename)s:%(lineno)d)"
+    logging.basicConfig(filename=str(log_file),
+                        format=head,
+                        level=logging.DEBUG)
     logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
+    
     console = logging.StreamHandler()
-    logging.getLogger('').addHandler(console)
+    console.setLevel(getattr(logging, level, 'INFO'))
+    console.setFormatter(CustomFormatter())
+    logger.addHandler(console)
 
     return logger
 
 
-def prepare_training(cfg, cfg_path):
+def prepare_training(cfg, cfg_path, debug=False):
     """
     ?? how to control logger in multi-processing
     """
@@ -61,6 +88,11 @@ def prepare_training(cfg, cfg_path):
     (final_out_dir / 'checkpoints').mkdir()
     (final_out_dir / 'samples').mkdir()
     
-    logger = create_logger(final_out_dir)
+    loglevel = 'DEBUG' if debug else 'INFO'
+    logger = create_logger(final_out_dir, loglevel)
     
     return logger, final_out_dir
+
+    
+    
+    
