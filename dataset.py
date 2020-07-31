@@ -62,14 +62,14 @@ def ImageFolderDataset(path, transform=None, resolution=None):
     return ImageFolder(path, transform=transform, loader=image_loader, is_valid_file=check_valid)
 
 
-def load_images_and_concat(path, resolution, sources, flip=False):
+def load_images_and_concat(path, resolution, sources, channel_info=None, flip=False):
     from torchvision import get_image_backend
     assert get_image_backend() == 'PIL'
     # assert isinstance(paths, (tuple, list))
     src_path = str(path)
     try:
         imgs = []
-        for src in sources:
+        for i, src in enumerate(sources):
             path = src_path.replace(sources[0], src)
             if not Path(path).exists():
                 raise RuntimeError(f'Path {path} does not exists. Please check all your sources \
@@ -77,33 +77,37 @@ def load_images_and_concat(path, resolution, sources, flip=False):
             img = Image.open(path).resize((resolution, resolution), Image.ANTIALIAS)
             if flip:
                 img = img.transpose(Image.FLIP_LEFT_RIGHT)
+                
             img = np.array(img)
             if img.ndim == 2:
                 img = img[..., None]
-                # some grayscale image(1 channel)
-                if src == 'images':
-                    img = np.repeat(img, 3, axis=-1) 
+            if channel_info:
+                assert img.shape[-1] == channel_info[i]
             imgs.append(img)
     except:
         raise runtimeError(f'fail to load the image: {path}')
     
     cat_images = np.concatenate(imgs, axis=-1)
+       
     return cat_images
 
 
 class MultiChannelDataset(Dataset):
     """ This dataset concatenate the source images with other 
-        information images like skeletons & masks.
+        information images like skeletons or masks.
     
     """
     def __init__(self, config, transform=None, **kwargs):
+        assert len(config.DATASET.SOURCE) == len(config.DATASET.CHANNELS), \
+                f"the length of sources and channels don't match."
         
         self.roots = config.DATASET.ROOTS
         self.transform = transform
         self.target_transform = None ##
         self.loader = partial(load_images_and_concat,
                               resolution=config.RESOLUTION,
-                              sources=config.DATASET.SOURCE)
+                              sources=config.DATASET.SOURCE,
+                              channel_info=config.DATASET.CHANNELS)
         self.load_in_mem = config.DATASET.LOAD_IN_MEM
         self.flip = config.DATASET.FLIP
       
