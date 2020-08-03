@@ -246,6 +246,8 @@ class Trainer():
                         else:
                             with torch.no_grad():
                                 v.copy_(ckpt['g_ema'][k])
+                    logger.info("Transfer learning. Set start iteration to 0")
+                    self.start_iter = 0
                 except RuntimeError:
                     logger.error(" ***** fail to load partial weights to models ***** ")
                      
