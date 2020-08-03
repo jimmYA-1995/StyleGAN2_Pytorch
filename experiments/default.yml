@@ -1,6 +1,6 @@
 # default configuration is in config/defaults.py 
-OUTPUT_DIR: 'results'
-NUM_SAMPLE: 64
+OUT_DIR: 'results'
+N_SAMPLE: 64
 # Use CUDA_VISIBLE_DEVICES to control #gpus
 WORKERS: 4
 RESOLUTION: 256

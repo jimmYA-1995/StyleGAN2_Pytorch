@@ -85,7 +85,7 @@ def load_images_and_concat(path, resolution, sources, channel_info=None, flip=Fa
                 assert img.shape[-1] == channel_info[i]
             imgs.append(img)
     except:
-        raise runtimeError(f'fail to load the image: {path}')
+        raise RuntimeError(f'fail to load the image: {path}')
     
     cat_images = np.concatenate(imgs, axis=-1)
        
