@@ -51,7 +51,7 @@ def create_logger(out_dir, level='INFO'):
     head = "%(levelname)-8s - %(asctime)-15s - %(message)s (%(filename)s:%(lineno)d)"
     logging.basicConfig(filename=str(log_file),
                         format=head,
-                        level=logging.DEBUG)
+                        level=logging.INFO)
     logger = logging.getLogger()
     
     console = logging.StreamHandler()
@@ -78,7 +78,7 @@ def prepare_training(cfg, cfg_path, debug=False):
     if len(ids) > 0:
         run_id = str(sorted(ids)[-1] + 1).zfill(5)
     
-    final_out_dir = root_out_dir / f'{run_id}-{len(os.environ['CUDA_VISIBLE_DEVICES'])}gpu-{cfg_name}'
+    final_out_dir = root_out_dir / f'{run_id}-{len(os.environ["CUDA_VISIBLE_DEVICES"])}gpu-{cfg_name}'
     final_out_dir.mkdir()
     
     # out of expectation

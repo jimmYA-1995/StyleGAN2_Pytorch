@@ -159,10 +159,17 @@ class Trainer():
 #                                      load_in_mem=False, flip=True, distributed=args.distributed)
         print(f"get dataloader complete ({time() - t})")
         
+        self.use_sk = False
+        self.use_mk = False
+        if config.MODEL.EXTRA_CHANNEL > 0:
+            if 'skeleton' in config.DATASET.SOURCE[1]:
+                self.use_sk = True
+            if 'mask' in config.DATASET.SOURCE[-1]:
+                self.use_mk = True
         # Define model
-        self.generator = Generator(self.latent, 0, self.resolution, extra_channels=config.MODEL.EXTRA_CHANNEL, is_training=True).to(self.device)
+        self.generator = Generator(self.latent, 0, self.resolution, extra_channels=config.MODEL.EXTRA_CHANNEL, use_sk=self.use_sk, use_mk=self.use_mk, is_training=True).to(self.device)
         self.discriminator = Discriminator(0, self.resolution, extra_channels=config.MODEL.EXTRA_CHANNEL).to(self.device)
-        self.g_ema = Generator(self.latent, 0, self.resolution, extra_channels=config.MODEL.EXTRA_CHANNEL, is_training=False).to(self.device)
+        self.g_ema = Generator(self.latent, 0, self.resolution, extra_channels=config.MODEL.EXTRA_CHANNEL, use_sk=self.use_sk, use_mk=self.use_mk, is_training=False).to(self.device)
         self.g_ema.eval()
         accumulate(self.g_ema, self.generator, 0)
         
@@ -300,7 +307,26 @@ class Trainer():
         accum = 0.5 ** (32 / (10 * 1000))
 
         sample_z = torch.randn(self.n_sample, self.latent, device=self.device)
+        self.logger.debug(f"sample vector: {sample_z.shape}")
+        if self.use_sk:
+            import skimage.io as io
+            sample_sk = []
+                
+            trf = [
+                        transforms.ToTensor(),
+                        transforms.Normalize([0.5], [0.5],
+                                             inplace=True),
+                    ]
+            transform = transforms.Compose(trf)
+            
+            for p in (Path(config.DATASET.ROOTS[0]) / 'sample_sk').glob('*.jpg'):
+                sample_sk.append(transform(io.imread(p)[..., None])[None, ...])
+            sample_sk = torch.cat(sample_sk, dim=0).to('cuda')
+            
 
+            self.logger.debug(f"sample sk: {sample_sk.shape}, {sample_sk.max()}, {sample_sk.min()}, {type(sample_sk)}")
+        sample_mk = None
+        
         # start training
         for i in pbar:
             s = time()
@@ -308,13 +334,25 @@ class Trainer():
             if isinstance(real_img, (tuple, list)):
                 # only feed data for now. (unconditional)
                 real_img = real_img[0]
+
             real_img = real_img.to(self.device)
+            self.logger.debug("-----------------")
+            self.logger.debug(f"input shape: {real_img.shape}")
+            assert real_img.shape[1] in [4,5]
+            if real_img.shape[1] == 4:
+                real_img = real_img[:, :3, ...]
+                real_sk = real_img[:, -1:, ...]
+                real_mk = None
+            elif real_img.shape[1] == 5:
+                real_img = real_img[:, :3, ...]
+                real_sk = real_img[:, 3:4, ...]
+                real_mk = real_img[:, -1:, ...]
 
             requires_grad(self.generator, False)
             requires_grad(self.discriminator, True)
 
             noise = mixing_noise(self.batch, self.latent, self.mixing, self.device)
-            fake_img, _ = self.generator(noise)
+            fake_img, _ = self.generator(noise, sk=real_sk, mk=real_mk)
             fake_pred = self.discriminator(fake_img)
             real_pred = self.discriminator(real_img)
 
@@ -344,7 +382,7 @@ class Trainer():
             requires_grad(self.discriminator, False)
 
             noise = mixing_noise(self.batch, self.latent, self.mixing, self.device)
-            fake_img, _ = self.generator(noise)
+            fake_img, _ = self.generator(noise, sk=real_sk, mk=real_mk)
             fake_pred = self.discriminator(fake_img)
             g_loss = nonsaturating_loss(fake_pred)
 
@@ -357,11 +395,14 @@ class Trainer():
             g_regularize = i % self.g_reg_every == 0
 
             if g_regularize:
+                self.logger.debug("Apply regularization to G")
                 path_batch_size = max(1, self.batch // self.path_batch_shrink)
                 noise = mixing_noise(
                     path_batch_size, self.latent, self.mixing, self.device
                 )
-                fake_img, latents = self.generator(noise, return_latents=True)
+                real_sk_reg = real_sk[:path_batch_size] if real_sk is not None else None
+                real_mk_reg = real_mk[:path_batch_size] if real_mk is not None else None
+                fake_img, latents = self.generator(noise, sk=real_sk_reg, mk=real_mk_reg, return_latents=True)
 
                 path_loss, mean_path_length, path_lengths = path_regularize(
                     fake_img, latents, mean_path_length
@@ -414,9 +455,9 @@ class Trainer():
                     sample_iter = 'init' if i==0 else str(i).zfill(digits_length)
                     with torch.no_grad():
                         self.g_ema.eval()
-                        sample, _ = self.g_ema([sample_z])
+                        sample, _ = self.g_ema([sample_z], sk=sample_sk, mk=sample_mk) ## inference
                         
-                        if cfg_d.DATASET == 'MultiChannelDataset':
+                        if cfg_d.DATASET == 'MultiChannelDataset' and not self.use_sk:
                             s = 0
                             samples = []
                             for i, src in enumerate(cfg_d.SOURCE):
@@ -520,7 +561,7 @@ if __name__ == '__main__':
     logger.info(f"trainer initialized. (costs {time() - t})")
 
     if get_rank() == 0 and wandb is not None and args.wandb:
-        wandb.init(project='stylegan2')
+        wandb.init(project='stylegan2-appendSK')
     
     logger.info("start training")
     trainer.train()
