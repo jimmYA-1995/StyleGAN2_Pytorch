@@ -1,4 +1,5 @@
 import math
+import time
 import logging
 import numpy as np
 import torch
@@ -503,8 +504,7 @@ class G_synthesis_stylegan2(nn.Module):
                     x_list.append(F.interpolate(sk, size))
                 if mk is not None:
                     x_list.append(F.interpolate(mk, size))
-                for _ in x_list:
-                    logger.debug(f"shape: {_.shape}")
+
                 x = torch.cat(x_list, dim=1)
             
             x = self.convs[res*2 - 6](x, dlatents_in[:, res*2-5], noises[res*2-5])

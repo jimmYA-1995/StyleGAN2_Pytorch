@@ -1,10 +1,14 @@
+import time
 import random
+import logging
 import importlib
 import numpy as np
 import torch
 import torch.nn as nn
 
 from .components import FromRGB, DBlock, minibatch_stddev_layer, Layer, Dense_layer
+
+logger = logging.getLogger()
 
 class Generator(nn.Module):
     def __init__(
@@ -74,8 +78,10 @@ class Generator(nn.Module):
         else:
             dlatents = self.mapping_network(latents_in[0], labels_in,
                                             dlatent_broadcast=self.num_layers)
-
+        s = time.time()
         images_out = self.synthesis_network(dlatents, sk=sk, mk=mk)
+        t = time.time() - s
+        logger.warn('synthesis forward: {:.4f}sec'.format(t))
 
         if return_latents:
             return images_out, dlatents

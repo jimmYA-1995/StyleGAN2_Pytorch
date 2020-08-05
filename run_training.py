@@ -161,11 +161,11 @@ class Trainer():
         
         self.use_sk = False
         self.use_mk = False
-        if config.MODEL.EXTRA_CHANNEL > 0:
-            if 'skeleton' in config.DATASET.SOURCE[1]:
-                self.use_sk = True
-            if 'mask' in config.DATASET.SOURCE[-1]:
-                self.use_mk = True
+        #if config.MODEL.EXTRA_CHANNEL > 0:
+        #    if 'skeleton' in config.DATASET.SOURCE[1]:
+        #        self.use_sk = True
+        #    if 'mask' in config.DATASET.SOURCE[-1]:
+        #        self.use_mk = True
         # Define model
         self.generator = Generator(self.latent, 0, self.resolution, extra_channels=config.MODEL.EXTRA_CHANNEL, use_sk=self.use_sk, use_mk=self.use_mk, is_training=True).to(self.device)
         self.discriminator = Discriminator(0, self.resolution, extra_channels=config.MODEL.EXTRA_CHANNEL).to(self.device)
@@ -308,6 +308,7 @@ class Trainer():
 
         sample_z = torch.randn(self.n_sample, self.latent, device=self.device)
         self.logger.debug(f"sample vector: {sample_z.shape}")
+        sample_sk = sample_mk = None
         if self.use_sk:
             import skimage.io as io
             sample_sk = []
@@ -338,11 +339,13 @@ class Trainer():
             real_img = real_img.to(self.device)
             self.logger.debug("-----------------")
             self.logger.debug(f"input shape: {real_img.shape}")
+            real_sk = real_mk = None
             assert real_img.shape[1] in [4,5]
-            if real_img.shape[1] == 4:
+            if not self.use_sk:
+                real_img = real_img[:, :3, ...]
+            elif real_img.shape[1] == 4:
                 real_img = real_img[:, :3, ...]
                 real_sk = real_img[:, -1:, ...]
-                real_mk = None
             elif real_img.shape[1] == 5:
                 real_img = real_img[:, :3, ...]
                 real_sk = real_img[:, 3:4, ...]
@@ -457,7 +460,7 @@ class Trainer():
                         self.g_ema.eval()
                         sample, _ = self.g_ema([sample_z], sk=sample_sk, mk=sample_mk) ## inference
                         
-                        if cfg_d.DATASET == 'MultiChannelDataset' and not self.use_sk:
+                        if cfg_d.DATASET == 'MultiChannelDataset' and not self.use_sk and False:
                             s = 0
                             samples = []
                             for i, src in enumerate(cfg_d.SOURCE):
