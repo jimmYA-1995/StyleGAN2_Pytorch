@@ -51,8 +51,8 @@ def get_dataloader(config, args=None, distributed=True):
         
     trf = [
         transforms.ToTensor(),
-        transforms.Normalize([0.5] * (3 + config.MODEL.EXTRA_CHANNEL),
-                             [0.5] * (3 + config.MODEL.EXTRA_CHANNEL),
+        transforms.Normalize([0.5,0.5,0.5,0.5], # * (3 + config.MODEL.EXTRA_CHANNEL),
+                             [0.5,0.5,0.5,5], # * (3 + config.MODEL.EXTRA_CHANNEL),
                              inplace=True),
     ]
     #if config.MODEL.EXTRA_CHANNEL == 0:
@@ -161,11 +161,11 @@ class Trainer():
         
         self.use_sk = False
         self.use_mk = False
-        #if config.MODEL.EXTRA_CHANNEL > 0:
-        #    if 'skeleton' in config.DATASET.SOURCE[1]:
-        #        self.use_sk = True
-        #    if 'mask' in config.DATASET.SOURCE[-1]:
-        #        self.use_mk = True
+        if config.MODEL.EXTRA_CHANNEL > 0:
+            if 'skeleton' in config.DATASET.SOURCE[1]:
+                self.use_sk = True
+            if 'mask' in config.DATASET.SOURCE[-1]:
+                self.use_mk = True
         # Define model
         self.generator = Generator(self.latent, 0, self.resolution, extra_channels=config.MODEL.EXTRA_CHANNEL, use_sk=self.use_sk, use_mk=self.use_mk, is_training=True).to(self.device)
         self.discriminator = Discriminator(0, self.resolution, extra_channels=config.MODEL.EXTRA_CHANNEL).to(self.device)
@@ -175,7 +175,7 @@ class Trainer():
         
         # init. FID tracker if needed.
         if get_rank() == 0 and 'fid' in config.EVAL.METRICS.split(','):
-            self.fid_tracker = FIDTracker(config.EVAL.FID, self.loader, self.out_dir, logger)
+            self.fid_tracker = FIDTracker(config.EVAL.FID, self.loader, self.out_dir, use_sk=self.use_sk)
             print(self.fid_tracker)
         
         g_reg_ratio = self.g_reg_every / (self.g_reg_every + 1)
@@ -315,7 +315,7 @@ class Trainer():
                 
             trf = [
                         transforms.ToTensor(),
-                        transforms.Normalize([0.5], [0.5],
+                        transforms.Normalize([0.5], [5],
                                              inplace=True),
                     ]
             transform = transforms.Compose(trf)
@@ -344,13 +344,15 @@ class Trainer():
             if not self.use_sk:
                 real_img = real_img[:, :3, ...]
             elif real_img.shape[1] == 4:
+                real_sk = real_img[:, 3:, ...]
                 real_img = real_img[:, :3, ...]
-                real_sk = real_img[:, -1:, ...]
             elif real_img.shape[1] == 5:
-                real_img = real_img[:, :3, ...]
+                real_mk = real_img[:, 4:, ...]
                 real_sk = real_img[:, 3:4, ...]
-                real_mk = real_img[:, -1:, ...]
-
+                real_img = real_img[:, :3, ...]
+            self.logger.debug(f"[sk] type: {type(real_sk)} shape: {real_sk.shape}")
+            self.logger.debug(f"[sk] mean: {real_sk.mean()} std: {real_sk.std()} min:{real_sk.min()} max:{real_sk.max()}")
+            
             requires_grad(self.generator, False)
             requires_grad(self.discriminator, True)
 
@@ -460,7 +462,7 @@ class Trainer():
                         self.g_ema.eval()
                         sample, _ = self.g_ema([sample_z], sk=sample_sk, mk=sample_mk) ## inference
                         
-                        if cfg_d.DATASET == 'MultiChannelDataset' and not self.use_sk and False:
+                        if cfg_d.DATASET == 'MultiChannelDataset' and not self.use_sk:
                             s = 0
                             samples = []
                             for i, src in enumerate(cfg_d.SOURCE):

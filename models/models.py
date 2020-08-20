@@ -81,7 +81,7 @@ class Generator(nn.Module):
         s = time.time()
         images_out = self.synthesis_network(dlatents, sk=sk, mk=mk)
         t = time.time() - s
-        logger.warn('synthesis forward: {:.4f}sec'.format(t))
+        logger.debug('synthesis forward: {:.4f}sec'.format(t))
 
         if return_latents:
             return images_out, dlatents
