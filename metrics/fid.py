@@ -1,8 +1,12 @@
 import pickle
+import logging
+import argparse
 from pathlib import Path
 
 import numpy as np
 import torch
+from torch import nn
+from torchvision import transforms
 import matplotlib.pyplot as plt
 from scipy import linalg
 from tqdm import tqdm
@@ -18,19 +22,39 @@ def sample_data(loader):
 
 
 class FIDTracker():
-    def __init__(self, config, dataloader, output_dir, logger, use_tqdm=False):
+    def __init__(self, config, dataloader, output_dir, use_tqdm=False, use_sk=False):
         inception_path = config.INCEPTION_CACHE
         self.device = 'cuda'
         self.config = config
-        self.logger = logger
+        self.logger = logging.getLogger()
         self.output_path = Path(output_dir)
+        if not self.output_path.exists():
+            self.output_path.mkdir(parents=True)
         self.k_iters = []
         self.fids = []
+        self.sample_sk = None
         self.n_batch = config.N_SAMPLE // config.BATCH_SIZE
         self.resid = config.N_SAMPLE % config.BATCH_SIZE
         self.idx_iterator = range(self.n_batch + 1)
         if use_tqdm:
             self.idx_iterator = tqdm(self.idx_iterator)
+        
+        if config.SAMPLE_DIR:
+            import skimage.io as io
+            sample_sk = []
+                
+            trf = [
+                        transforms.ToTensor(),
+                        transforms.Normalize([0.5], [5],
+                                             inplace=True),
+                    ]
+            transform = transforms.Compose(trf)
+            
+            for p in Path(self.config.SAMPLE_DIR).glob('*.jpg'):
+                sample_sk.append(transform(io.imread(p)[..., None])[None, ...])
+            self.sample_sk = torch.cat(sample_sk, dim=0).to('cuda')
+            self.logger.info(f"using smaple directory: {self.config.SAMPLE_DIR}. \
+                                Get {self.sample_sk.shape[0]} skeleton sample")
         
         # get inception V3 model
         self.inceptionV3 = torch.nn.DataParallel(load_patched_inception_v3()).to(self.device)
@@ -128,7 +152,9 @@ class FIDTracker():
                 continue
             
             latent = torch.randn(batch, 512, device=self.device)
-            img, _ = generator([latent])
+            if self.sample_sk is not None:
+                sk = self.sample_sk[:batch]
+            img, _ = generator([latent], sk=sk)
             feature = self.inceptionV3(img[:, :3, :, :])[0].view(img.shape[0], -1)
             features.append(feature.to('cpu'))
 
@@ -142,3 +168,89 @@ class FIDTracker():
         plt.ylabel('FID')
         plt.savefig(self.output_path / 'fid.png')
 
+
+if __name__ == '__main__':
+    
+    import sys
+    from models import Generator
+    from config import config, update_config
+    from run_training import get_dataloader
+    device = 'cuda'
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument('--truncation', type=float, default=1)
+    parser.add_argument('--truncation_mean', type=int, default=4096)
+    parser.add_argument("--cfg", required=True, help="path to the configuration file")
+    parser.add_argument('--batch', type=int, default=64)
+    parser.add_argument('--n_sample', type=int, default=50000)
+    parser.add_argument('--size', type=int, default=256)
+    parser.add_argument('--inception', type=str, default=None)
+    parser.add_argument('--out_dir', type=str, default='/tmp/fid_result')
+    parser.add_argument('--ckpt', type=str, default="", metavar='CHECKPOINT', help='model ckpt or dir')
+    parser.add_argument("--debug", action='store_true', default=False, help="whether to use debug mode")
+                      
+    args = parser.parse_args()
+    
+    loglevel = "DEBUG" if args.debug else "INFO"
+    head = "%(levelname)-8s - %(asctime)-15s - %(message)s (%(filename)s:%(lineno)d)"
+    logging.basicConfig(level=loglevel,
+                        format=head)
+    logger = logging.getLogger()
+    update_config(config, args)
+                      
+    if args.ckpt:
+        args.ckpt = Path(args.ckpt)
+    
+    if args.ckpt.is_dir():
+        logging.info(f'calculating ckpt in directory {str(args.ckpt)}')
+        ckpts = sorted(list(args.ckpt.glob('*.pt')))
+        file_path = args.ckpt / 'fid.txt'
+        plot_path = args.ckpt / 'fid.png'
+    elif args.ckpt.is_file():
+        ckpts = [args.ckpt]
+        file_path = Path(str(Path(args.ckpt).parent) + '-fid_result.txt')
+        plot_path = None
+    else:
+        raise FileNotFoundError("something wrong with ckpt path")
+
+    if not file_path.exists():
+        file_path.touch()
+    logger.info(f"calculate the following {len(ckpts)} ckpt files: {[str(ckpt) for ckpt in ckpts]}")
+    
+    # Get dataloader
+    def sample_data(loader):
+        while True:
+            for batch in loader:
+                yield batch
+    
+    logging.info("getting dataloader of real images...")
+    loader = get_dataloader(config, args=args, distributed=False)
+    loader = sample_data(loader)
+    logging.info('loading dataloader complete')
+    
+    use_sk = True if config.EVAL.FID.SAMPLE_DIR else False
+        
+    fid_tracker = FIDTracker(config.EVAL.FID, loader, args.out_dir, use_sk=use_sk)
+    
+    for ckpt in ckpts:
+        logging.info(f"calculating fid of {str(ckpt)}")
+        ckpt_name = str(ckpt.name)[5:11]
+        k_iter = int(ckpt_name)/1000
+        ckpt = torch.load(ckpt)
+        
+        # latent_dim, label_size, resolution
+        g = Generator(config.MODEL.LATENT_SIZE, 0, config.RESOLUTION,
+                      extra_channels=config.MODEL.EXTRA_CHANNEL, use_sk=use_sk).to(device)
+        g.load_state_dict(ckpt['g_ema'])
+        g = nn.DataParallel(g)
+        g.eval()
+
+        if args.truncation < 1:
+            with torch.no_grad():
+                mean_latent = g.mean_latent(args.truncation_mean)
+        else:
+            mean_latent = None
+        
+        fid_tracker.calc_fid(g, k_iter, save=True)
+    
+    fid_tracker.plot_fid()
