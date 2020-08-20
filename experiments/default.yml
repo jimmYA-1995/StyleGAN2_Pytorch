@@ -1,4 +1,6 @@
-# default configuration is in config/defaults.py 
+# default configuration is in config/defaults.py
+DESCRIPTION: >
+    nothing
 OUT_DIR: 'results'
 N_SAMPLE: 64
 # Use CUDA_VISIBLE_DEVICES to control #gpus
@@ -51,4 +53,5 @@ EVAL:
     BATCH_SIZE: 64
     N_SAMPLE: 50000
     INCEPTION_CACHE: ''
+    SAMPLE_DIR: ''
 
