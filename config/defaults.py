@@ -56,6 +56,7 @@ _C.EVAL.FID.EVERY = 0
 _C.EVAL.FID.BATCH_SIZE = 32
 _C.EVAL.FID.N_SAMPLE = 50000
 _C.EVAL.FID.INCEPTION_CACHE = "inception_cache.pkl"
+_C.EVAL.FID.SAMPLE_DIR = ""
 
 
 def update_config(cfg, args):
