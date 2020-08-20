@@ -13,6 +13,7 @@ from yacs.config import CfgNode as CN
 
 
 _C = CN()
+_C.DESCRIPTION = ''
 _C.OUT_DIR = 'results'
 _C.N_SAMPLE = 64
 _C.WORKERS = 4
