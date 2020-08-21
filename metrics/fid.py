@@ -1,3 +1,4 @@
+import time
 import pickle
 import logging
 import argparse
@@ -13,8 +14,6 @@ from tqdm import tqdm
 
 from calc_inception import load_patched_inception_v3
 
-
-
 def sample_data(loader):
     while True:
         for batch in loader:
@@ -22,7 +21,7 @@ def sample_data(loader):
 
 
 class FIDTracker():
-    def __init__(self, config, dataloader, output_dir, use_tqdm=False, use_sk=False):
+    def __init__(self, config, dataloader, output_dir, use_tqdm=False):
         inception_path = config.INCEPTION_CACHE
         self.device = 'cuda'
         self.config = config
@@ -76,6 +75,7 @@ class FIDTracker():
 
     def calc_fid(self, generator, k_iter, save=False, eps=1e-6):
         self.logger.info(f'get fid on {k_iter * 1000} iterations')
+        start = time.time()
         sample_features = self.extract_feature_from_model(generator)
         sample_mean = np.mean(sample_features, 0)
         sample_cov = np.cov(sample_features, rowvar=False)
@@ -100,7 +100,8 @@ class FIDTracker():
 
         trace = np.trace(sample_cov) + np.trace(self.real_cov) - 2 * np.trace(cov_sqrt)
         fid = mean_norm + trace
-        self.logger.info(f'FID in {str(1000 * k_iter).zfill(6)} iterations: {fid}')
+        finish = time.time()
+        self.logger.info(f'FID in {str(1000 * k_iter).zfill(6)} iterations: {fid}. [cost: {round(finish - start, 2)} sec(s)]')
         self.k_iters.append(k_iter)
         self.fids.append(fid)
         
@@ -218,10 +219,6 @@ if __name__ == '__main__':
     logger.info(f"calculate the following {len(ckpts)} ckpt files: {[str(ckpt) for ckpt in ckpts]}")
     
     # Get dataloader
-    def sample_data(loader):
-        while True:
-            for batch in loader:
-                yield batch
     
     logging.info("getting dataloader of real images...")
     loader = get_dataloader(config, args=args, distributed=False)
@@ -230,7 +227,7 @@ if __name__ == '__main__':
     
     use_sk = True if config.EVAL.FID.SAMPLE_DIR else False
         
-    fid_tracker = FIDTracker(config.EVAL.FID, loader, args.out_dir, use_sk=use_sk)
+    fid_tracker = FIDTracker(config.EVAL.FID, loader, args.out_dir)
     
     for ckpt in ckpts:
         logging.info(f"calculating fid of {str(ckpt)}")
