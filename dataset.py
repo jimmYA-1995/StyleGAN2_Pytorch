@@ -11,7 +11,9 @@ from torchvision.datasets import ImageFolder
 
 
 class MultiResolutionDataset(Dataset):
-    def __init__(self, path, transform, resolution=256):
+    def __init__(self, config, transform, resolution=256):
+        path = config.ROOTS[0]
+        
         self.env = lmdb.open(
             path,
             max_readers=32,
@@ -45,7 +47,8 @@ class MultiResolutionDataset(Dataset):
         return img
 
 
-def ImageFolderDataset(path, transform=None, resolution=None):
+def ImageFolderDataset(config, transform=None, resolution=None):
+    path = config.ROOTS[0]
     def image_loader(path):
         try:
             img = Image.open(path)
@@ -159,7 +162,7 @@ class MultiChannelDataset(Dataset):
             #if self.target_transform is not None:
             #    target = self.target_transform(target) 
             
-        return concat_img, target
+        return concat_img, target  
 
     def __repr__(self):
         fmt_str = 'Dataset ' + self.__class__.__name__ + '\n'
@@ -170,3 +173,40 @@ class MultiChannelDataset(Dataset):
         tmp = '    Target Transforms (if any): '
         fmt_str += '{0}{1}'.format(tmp, self.target_transform.__repr__().replace('\n', '\n' + ' ' * len(tmp)))
         return fmt_str
+    
+def data_sampler(dataset, shuffle, distributed):
+    if distributed:
+        return data.distributed.DistributedSampler(dataset, shuffle=shuffle)
+
+    if shuffle:
+        return data.RandomSampler(dataset)
+    else:
+        return data.SequentialSampler(dataset)
+
+def get_dataset(config):
+    # config.DATASET
+    trf = [
+        transforms.ToTensor(),
+        transforms.Normalize(config.MEAN, config.STD, inplace=True),
+    ]
+    transform = transforms.Compose(trf)
+    Dataset = locals().get(config.DATASET)
+    dataset = Dataset(config, transform=transfrom)
+    return dataset   
+    
+def get_dataloader(config, args=None, distributed=True):
+    dataset = get_dataset(config.DATASET)
+    
+    loader = data.DataLoader(
+        dataset,
+        batch_size=config.TRAIN.BATCH_SIZE_PER_GPU,
+        num_workers=config.WORKERS,
+        sampler=data_sampler(dataset, shuffle=True, distributed=distributed),
+        drop_last=True,
+    )
+    return loader
+
+
+if __name__ == "__main__":
+    # test code
+    pass

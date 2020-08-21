@@ -21,6 +21,18 @@ DATASET:
     - 3
     - 1
     - 1
+  MEAN:
+    - 0.5
+    - 0.5
+    - 0.5
+    - 0.5
+    - 0.5
+  STD:
+    - 0.5
+    - 0.5
+    - 0.5
+    - 0.5
+    - 0.5
   LOAD_IN_MEM: false
   FLIP: true
 

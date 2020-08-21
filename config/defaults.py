@@ -25,6 +25,8 @@ _C.DATASET.DATASET = 'MultiChannelDataset'
 _C.DATASET.ROOTS = ['/root/notebooks/data/mpii']
 _C.DATASET.SOURCE = ['images']
 _C.DATASET.CHANNELS = [3]
+_C.DATASET.MEAN = [0.5,0.5,0.5]
+_C.DATASET.STD = [0.5,0.5,0.5]
 _C.DATASET.LOAD_IN_MEM = False
 _C.DATASET.FLIP = True
 

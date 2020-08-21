@@ -11,7 +11,6 @@ import torch
 import torch.distributed as dist
 from torch import nn, autograd, optim
 from torch.nn import functional as F
-from torch.utils import data
 from torchvision import transforms, utils
 from tqdm import tqdm
 
@@ -20,11 +19,11 @@ try:
 except ImportError:
     wandb = None
 
+from dataset import get_dataset, get_dataloader
 from misc import parse_args, prepare_training
 from load_weights import load_weights_from_nv
 from models import Generator, Discriminator
 from losses import nonsaturating_loss, path_regularize, logistic_loss, d_r1_loss
-from dataset import MultiResolutionDataset, ImageFolderDataset, MultiChannelDataset
 from metrics import FIDTracker
 from config import config, update_config
 from distributed import (
@@ -36,56 +35,10 @@ from distributed import (
     get_world_size,
 )
 
-def data_sampler(dataset, shuffle, distributed):
-    if distributed:
-        return data.distributed.DistributedSampler(dataset, shuffle=shuffle)
-
-    if shuffle:
-        return data.RandomSampler(dataset)
-    else:
-        return data.SequentialSampler(dataset)
-
-def get_dataloader(config, args=None, distributed=True):
-
-    batch_size = args.batch if args and args.batch else config.TRAIN.BATCH_SIZE_PER_GPU
-        
-    trf = [
-        transforms.ToTensor(),
-        transforms.Normalize([0.5,0.5,0.5,0.5], # * (3 + config.MODEL.EXTRA_CHANNEL),
-                             [0.5,0.5,0.5,5], # * (3 + config.MODEL.EXTRA_CHANNEL),
-                             inplace=True),
-    ]
-    #if config.MODEL.EXTRA_CHANNEL == 0:
-    #    trf.insert(0, transforms.RandomHorizontalFlip())
-    transform = transforms.Compose(trf)
-    
-    if config.DATASET.DATASET == "MultiChannelDataset":
-        print("using multichannel dataset")
-        dataset = MultiChannelDataset(config, transform=transform)
-        print(f'total dataset: {len(dataset)} (flip: {config.DATASET.FLIP},'
-              f'load in memory: {config.DATASET.LOAD_IN_MEM})')
-    elif config.DATASET.DATASET == "MultiResolutionDataset":
-        print("using multiResolution(original 3 channels) dataset")
-        dataset = MultiResolutionDataset(config.DATASET.ROOTS[0], transform, config.RESOLUTION)
-    elif config.DATASET.DATASET == "ImageFolderDataset":
-        dataset = ImageFolderDataset(config.DATASET.ROOTS[0], transform, config.RESOLUTION)
-    else:
-        raise RuntimeError("unsupported dataset")
-    
-    # TODO: load dataset into shared memory 
-    loader = data.DataLoader(
-        dataset,
-        batch_size=batch_size,
-        num_workers=config.WORKERS,
-        sampler=data_sampler(dataset, shuffle=True, distributed=distributed),
-        drop_last=True,
-    )
-    return loader
 
 def requires_grad(model, flag=True):
     for p in model.parameters():
         p.requires_grad = flag
-
 
 def accumulate(model1, model2, decay=0.999):
     par1 = dict(model1.named_parameters())
@@ -155,8 +108,6 @@ class Trainer():
         print("get dataloader ...")
         t = time()
         self.loader = get_dataloader(config, distributed=args.distributed)
-#         self.loader = get_dataloader(args.path, args.size, args.batch, self.extra_channels, args.num_worker,
-#                                      load_in_mem=False, flip=True, distributed=args.distributed)
         print(f"get dataloader complete ({time() - t})")
         
         self.use_sk = False
