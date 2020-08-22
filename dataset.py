@@ -6,12 +6,13 @@ from tqdm import tqdm
 import lmdb
 import numpy as np
 from PIL import Image
-from torch.utils.data import Dataset
+from torch.utils import data
+from torchvision import transforms
 from torchvision.datasets import ImageFolder
 
 
-class MultiResolutionDataset(Dataset):
-    def __init__(self, config, transform, resolution=256):
+class MultiResolutionDataset(data.Dataset):
+    def __init__(self, config, resolution, transform=None):
         path = config.ROOTS[0]
         
         self.env = lmdb.open(
@@ -47,13 +48,12 @@ class MultiResolutionDataset(Dataset):
         return img
 
 
-def ImageFolderDataset(config, transform=None, resolution=None):
+def ImageFolderDataset(config, resolution, transform=None):
     path = config.ROOTS[0]
     def image_loader(path):
         try:
             img = Image.open(path)
-            if resolution:
-                img = img.resize((resolution, resolution), Image.ANTIALIAS)
+            img = img.resize((resolution, resolution), Image.ANTIALIAS)
             if img.mode == 'L':
                 img = img.convert('RGB')
             return img
@@ -95,26 +95,26 @@ def load_images_and_concat(path, resolution, sources, channel_info=None, flip=Fa
     return cat_images
 
 
-class MultiChannelDataset(Dataset):
+class MultiChannelDataset(data.Dataset):
     """ This dataset concatenate the source images with other 
         information images like skeletons or masks.
     
     """
-    def __init__(self, config, transform=None, **kwargs):
-        assert len(config.DATASET.SOURCE) == len(config.DATASET.CHANNELS), \
+    def __init__(self, config, resolution, transform=None, **kwargs):
+        assert len(config.SOURCE) == len(config.CHANNELS), \
                 f"the length of sources and channels don't match."
         
-        self.roots = config.DATASET.ROOTS
+        self.roots = config.ROOTS
         self.transform = transform
         self.target_transform = None ##
         self.loader = partial(load_images_and_concat,
-                              resolution=config.RESOLUTION,
-                              sources=config.DATASET.SOURCE,
-                              channel_info=config.DATASET.CHANNELS)
-        self.load_in_mem = config.DATASET.LOAD_IN_MEM
-        self.flip = config.DATASET.FLIP
+                              resolution=resolution,
+                              sources=config.SOURCE,
+                              channel_info=config.CHANNELS)
+        self.load_in_mem = config.LOAD_IN_MEM
+        self.flip = config.FLIP
       
-        sources = config.DATASET.SOURCE
+        sources = config.SOURCE
         self.img_paths = []
         for root in self.roots:
             root = Path(root)
@@ -183,19 +183,19 @@ def data_sampler(dataset, shuffle, distributed):
     else:
         return data.SequentialSampler(dataset)
 
-def get_dataset(config):
+def get_dataset(config, resolution):
     # config.DATASET
     trf = [
         transforms.ToTensor(),
         transforms.Normalize(config.MEAN, config.STD, inplace=True),
     ]
     transform = transforms.Compose(trf)
-    Dataset = locals().get(config.DATASET)
-    dataset = Dataset(config, transform=transfrom)
+    Dataset = globals().get(config.DATASET)
+    dataset = Dataset(config, resolution, transform=transform)
     return dataset   
     
 def get_dataloader(config, batch_size, distributed=False):
-    dataset = get_dataset(config.DATASET)
+    dataset = get_dataset(config.DATASET, config.RESOLUTION)
     
     loader = data.DataLoader(
         dataset,

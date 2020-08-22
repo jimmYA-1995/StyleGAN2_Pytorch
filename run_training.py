@@ -124,10 +124,6 @@ class Trainer():
         self.g_ema.eval()
         accumulate(self.g_ema, self.generator, 0)
         
-        # init. FID tracker if needed.
-        if get_rank() == 0 and 'fid' in config.EVAL.METRICS.split(','):
-            self.fid_tracker = FIDTracker(config.EVAL.FID, self.out_dir)
-        
         g_reg_ratio = self.g_reg_every / (self.g_reg_every + 1)
         d_reg_ratio = self.d_reg_every / (self.d_reg_every + 1)
 
@@ -223,7 +219,13 @@ class Trainer():
                 output_device=self.local_rank,
                 broadcast_buffers=False
             )
-
+        
+        # init. FID tracker if needed.
+        if 'fid' in config.EVAL.METRICS.split(','):
+            if get_rank() == 0:
+                self.fid_tracker = FIDTracker(config, self.out_dir, use_tqdm=True)
+            synchronize()
+            
     def train(self):
         cfg_d = self.config.DATASET
         cfg_t = self.config.TRAIN

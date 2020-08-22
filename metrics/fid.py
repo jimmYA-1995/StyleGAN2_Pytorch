@@ -38,10 +38,9 @@ class FIDTracker():
         self.n_batch = fid_config.N_SAMPLE // fid_config.BATCH_SIZE
         self.resid = fid_config.N_SAMPLE % fid_config.BATCH_SIZE
         self.idx_iterator = range(self.n_batch + 1)
-        if use_tqdm:
-            self.idx_iterator = tqdm(self.idx_iterator)
+        self.use_tqdm = use_tqdm
         
-        if fid_config.BATCH_SIZE.SAMPLE_DIR:
+        if fid_config.SAMPLE_DIR:
             import skimage.io as io
             sample_sk = []
                 
@@ -59,8 +58,11 @@ class FIDTracker():
                                 Get {self.sample_sk.shape[0]} skeleton sample")
         
         # get inception V3 model
+        start = time.time()
+        self.logger.info("load inception model...")
         self.inceptionV3 = torch.nn.DataParallel(load_patched_inception_v3()).to(self.device)
         self.inceptionV3.eval()
+        self.logger.info("load inception model complete ({:.2f})".format(time.time() - start))
  
         # get features for real images
         if inception_path:
@@ -70,8 +72,8 @@ class FIDTracker():
                 self.real_mean = embeds['mean']
                 self.real_cov = embeds['cov']
         else:
-            self.real_mean, self.real_cov = \
-                self.extract_feature_from_real_images(get_dataloader(config, fid_config.BATCH_SIZE))
+            dataloader = get_dataloader(config, fid_config.BATCH_SIZE)
+            self.real_mean, self.real_cov = self.extract_feature_from_real_images(dataloader)
             self.logger.info(f"save inception cache in {self.output_path}")
             with open(self.output_path / 'inception_cache.pkl', 'wb') as f:
                 pickle.dump(dict(mean=self.real_mean, cov=self.real_cov), f)
@@ -118,10 +120,13 @@ class FIDTracker():
     @torch.no_grad()
     def extract_feature_from_real_images(self, dataloder):
         self.logger.info('extract features from real images...')
+        start = time.time()
         loader = sample_data(dataloder)
         features = []
         
-        for i in self.idx_iterator:
+        if self.use_tqdm:
+            idx_iterator = tqdm(self.idx_iterator)
+        for i in idx_iterator:
             batch = self.resid if i==self.n_batch else self.config.BATCH_SIZE
             if batch == 0:
                 continue
@@ -129,22 +134,26 @@ class FIDTracker():
             imgs = next(loader)
             if isinstance(imgs, (tuple, list)):
                 imgs = imgs[0]
-            imgs = imgs[:batch_size, :3, :, :].to(self.device)
-            feature = self.inceptionV3(imgs)[0].view(batch_size, -1)
+            imgs = imgs[:batch, :3, :, :].to(self.device)
+            feature = self.inceptionV3(imgs)[0].view(imgs.shape[0], -1)
             features.append(feature.to('cpu'))
 
         features = torch.cat(features, 0).numpy()
-        self.logger.info(f"complete. total extracted features: {features.shape[0]}")
-
         real_mean = np.mean(features, 0)
         real_cov = np.cov(features, rowvar=False)
+
+        self.logger.info(f"complete({round(time.time() - start, 2)} secs). \
+                           total extracted features: {features.shape[0]}")
         return real_mean, real_cov
 
     @torch.no_grad()
     def extract_feature_from_model(self, generator):
         
         features = []
-        for i in self.idx_iterator:
+        if self.use_tqdm:
+            idx_iterator = tqdm(self.idx_iterator)
+
+        for i in idx_iterator:
             batch = self.resid if i==self.n_batch else self.config.BATCH_SIZE
             if batch == 0:
                 continue
@@ -197,7 +206,7 @@ if __name__ == '__main__':
 
     if not args.ckpt:
         print("checkpoint(s) not found. Only get features of real images.\n return...")
-        return
+        exit(0)
 
     args.ckpt = Path(args.ckpt)
     ckpts = sorted(list(args.ckpt.glob('*.pt'))) \
