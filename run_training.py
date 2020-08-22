@@ -94,7 +94,7 @@ class Trainer():
         self.n_mlp = config.MODEL.N_MLP
         self.latent = config.MODEL.LATENT_SIZE
         # self.extra_channels = config.MODEL.EXTRA_CHANNEL
-        self.batch = config.TRAIN.BATCH_SIZE_PER_GPU
+        self.batch_size = config.TRAIN.BATCH_SIZE_PER_GPU
         self.mixing = config.TRAIN.STYLE_MIXING_PROB
         self.r1 = config.TRAIN.R1
         self.g_reg_every = config.TRAIN.G_REG_EVERY
@@ -107,7 +107,7 @@ class Trainer():
         # datset
         print("get dataloader ...")
         t = time()
-        self.loader = get_dataloader(config, distributed=args.distributed)
+        self.loader = get_dataloader(config, self.batch_size, distributed=args.distributed)
         print(f"get dataloader complete ({time() - t})")
         
         self.use_sk = False
@@ -126,8 +126,7 @@ class Trainer():
         
         # init. FID tracker if needed.
         if get_rank() == 0 and 'fid' in config.EVAL.METRICS.split(','):
-            self.fid_tracker = FIDTracker(config.EVAL.FID, self.loader, self.out_dir, use_sk=self.use_sk)
-            print(self.fid_tracker)
+            self.fid_tracker = FIDTracker(config.EVAL.FID, self.out_dir)
         
         g_reg_ratio = self.g_reg_every / (self.g_reg_every + 1)
         d_reg_ratio = self.d_reg_every / (self.d_reg_every + 1)
@@ -309,7 +308,7 @@ class Trainer():
             requires_grad(self.generator, False)
             requires_grad(self.discriminator, True)
 
-            noise = mixing_noise(self.batch, self.latent, self.mixing, self.device)
+            noise = mixing_noise(self.batch_size, self.latent, self.mixing, self.device)
             fake_img, _ = self.generator(noise, sk=real_sk, mk=real_mk)
             fake_pred = self.discriminator(fake_img)
             real_pred = self.discriminator(real_img)
@@ -339,7 +338,7 @@ class Trainer():
             requires_grad(self.generator, True)
             requires_grad(self.discriminator, False)
 
-            noise = mixing_noise(self.batch, self.latent, self.mixing, self.device)
+            noise = mixing_noise(self.batch_size, self.latent, self.mixing, self.device)
             fake_img, _ = self.generator(noise, sk=real_sk, mk=real_mk)
             fake_pred = self.discriminator(fake_img)
             g_loss = nonsaturating_loss(fake_pred)
@@ -354,7 +353,7 @@ class Trainer():
 
             if g_regularize:
                 self.logger.debug("Apply regularization to G")
-                path_batch_size = max(1, self.batch // self.path_batch_shrink)
+                path_batch_size = max(1, self.batch_size // self.path_batch_shrink)
                 noise = mixing_noise(
                     path_batch_size, self.latent, self.mixing, self.device
                 )

@@ -16,11 +16,11 @@ _C = CN()
 _C.DESCRIPTION = ''
 _C.OUT_DIR = 'results'
 _C.N_SAMPLE = 64
-_C.WORKERS = 4
 _C.RESOLUTION = 256
 
 
 _C.DATASET = CN()
+_C.DATASET.WORKERS = 4
 _C.DATASET.DATASET = 'MultiChannelDataset'
 _C.DATASET.ROOTS = ['/root/notebooks/data/mpii']
 _C.DATASET.SOURCE = ['images']

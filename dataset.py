@@ -194,13 +194,13 @@ def get_dataset(config):
     dataset = Dataset(config, transform=transfrom)
     return dataset   
     
-def get_dataloader(config, args=None, distributed=True):
+def get_dataloader(config, batch_size, distributed=False):
     dataset = get_dataset(config.DATASET)
     
     loader = data.DataLoader(
         dataset,
-        batch_size=config.TRAIN.BATCH_SIZE_PER_GPU,
-        num_workers=config.WORKERS,
+        batch_size=batch_size,
+        num_workers=config.DATASET.WORKERS,
         sampler=data_sampler(dataset, shuffle=True, distributed=distributed),
         drop_last=True,
     )
