@@ -4,10 +4,10 @@ DESCRIPTION: >
 OUT_DIR: 'results'
 N_SAMPLE: 64
 # Use CUDA_VISIBLE_DEVICES to control #gpus
-WORKERS: 4
 RESOLUTION: 256
 
 DATASET:
+  WORKERS: 4
   DATASET: MultiChannelDataset
   ROOTS:
     - '/root/notebooks/groups/DeepTrickLab/coco'
@@ -21,6 +21,18 @@ DATASET:
     - 3
     - 1
     - 1
+  MEAN:
+    - 0.5
+    - 0.5
+    - 0.5
+    - 0.5
+    - 0.5
+  STD:
+    - 0.5
+    - 0.5
+    - 0.5
+    - 0.5
+    - 0.5
   LOAD_IN_MEM: false
   FLIP: true
 
