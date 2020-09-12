@@ -87,7 +87,24 @@ class Generator(nn.Module):
             return images_out, dlatents
         return images_out, None
 
-
+    def get_latent(self, latents_in, labels_in=None, sk=None, mk=None, return_latents=None):
+        if self.use_sk:
+            assert sk is not None, "no skeleton input when use_sk"
+        if self.use_mk:
+            assert mk is not None, "no mask input when use_mk"
+        
+        # style mixing
+        if len(latents_in) == 2:
+            idx = random.randint(1, self.num_layers - 1)
+            inject_index = [idx, self.num_layers - idx] ## name confusing
+            dlatents = [self.mapping_network(l, labels_in, dlatent_broadcast=i)
+                        for l, i in zip(latents_in, inject_index)]
+            dlatents = torch.cat(dlatents, dim=1)
+        else:
+            dlatents = self.mapping_network(latents_in[0], labels_in,
+                                            dlatent_broadcast=self.num_layers)
+        return dlatents
+    
 class Discriminator(nn.Module):
     def __init__(
             self, label_size, resolution, extra_channels=3,
