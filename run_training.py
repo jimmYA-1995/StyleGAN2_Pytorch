@@ -492,6 +492,8 @@ class Trainer():
                             'Path Length': path_length_val,
                         }
                     )
+                
+            exit(0)
 
 
 if __name__ == '__main__':

@@ -66,8 +66,6 @@ def ImageFolderDataset(config, resolution, transform=None):
 
 
 def load_images_and_concat(path, resolution, sources, channel_info=None, flip=False):
-    from torchvision import get_image_backend
-    assert get_image_backend() == 'PIL'
     # assert isinstance(paths, (tuple, list))
     src_path = str(path)
     try:
@@ -101,8 +99,10 @@ class MultiChannelDataset(data.Dataset):
     
     """
     def __init__(self, config, resolution, transform=None, **kwargs):
+        from torchvision import get_image_backend
+        assert get_image_backend() == 'PIL'
         assert len(config.SOURCE) == len(config.CHANNELS), \
-                f"the length of sources and channels don't match."
+                f"the numbers of sources and channels don't match."
         
         self.roots = config.ROOTS
         self.transform = transform
@@ -159,8 +159,8 @@ class MultiChannelDataset(data.Dataset):
             if self.transform is not None:
                 concat_img = self.transform(concat_img)
                 
-            #if self.target_transform is not None:
-            #    target = self.target_transform(target) 
+            if self.target_transform is not None:
+                target = self.target_transform(target) 
             
         return concat_img, target  
 
