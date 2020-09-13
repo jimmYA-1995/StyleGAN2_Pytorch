@@ -497,8 +497,7 @@ class G_synthesis_stylegan2(nn.Module):
         # main layer
         for res in range(3, self.resolution_log2 + 1):
             if sk is not None or mk is not None:
-                x_list = []
-                x_list.append(x)
+                x_list = [x]
                 size = x.shape[-1] # W=H
                 if sk is not None:
                     x_list.append(F.interpolate(sk, size))
@@ -521,6 +520,7 @@ class G_mapping(nn.Module):
     def __init__(self,
         latent_size             = 512,          # Latent vector (Z) dimensionality.
         label_size              = 0,            # Label dimensionality, 0 if no labels.
+        embedding_size          = 0,
         dlatent_size            = 512,          # Disentangled latent (W) dimensionality.
         mapping_layers          = 8,            # Number of mapping layers.
         mapping_fmaps           = 512,          # Number of activations in the mapping layers.
@@ -537,8 +537,8 @@ class G_mapping(nn.Module):
     
         
         if label_size > 0:
-            self.embedding = nn.Embedding(label_size, latent_size)
-        fan_in = 2 * latent_size if label_size>0 else latent_size
+            self.embedding = nn.Embedding(label_size, embedding_size)
+        fan_in = (embedding_size +  latent_size) if label_size>0 else latent_size
         fc = []
         for layer_idx in range(mapping_layers):
             fmaps = dlatent_size if layer_idx == mapping_layers - 1 else mapping_fmaps
@@ -555,7 +555,7 @@ class G_mapping(nn.Module):
             
     def forward(self, latents, labels=None, dlatent_broadcast=None):
         x = latents
-        if self.label_size > 0:
+        if self.label_size > 0 and len(labels.shape) == 1:
             assert len(labels.shape) == 1
             y = self.embedding(labels)
             x = torch.cat((x, y), dim=1)
