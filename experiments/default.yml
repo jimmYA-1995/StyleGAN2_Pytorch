@@ -1,11 +1,13 @@
-# default configuration is in config/defaults.py 
+# default configuration is in config/defaults.py
+DESCRIPTION: >
+    nothing
 OUT_DIR: 'results'
 N_SAMPLE: 64
 # Use CUDA_VISIBLE_DEVICES to control #gpus
-WORKERS: 4
 RESOLUTION: 256
 
 DATASET:
+  WORKERS: 4
   DATASET: MultiChannelDataset
   ROOTS:
     - '/root/notebooks/groups/DeepTrickLab/coco'
@@ -19,6 +21,18 @@ DATASET:
     - 3
     - 1
     - 1
+  MEAN:
+    - 0.5
+    - 0.5
+    - 0.5
+    - 0.5
+    - 0.5
+  STD:
+    - 0.5
+    - 0.5
+    - 0.5
+    - 0.5
+    - 0.5
   LOAD_IN_MEM: false
   FLIP: true
 
@@ -37,7 +51,6 @@ TRAIN:
   PATH_BATCH_SHRINK: 2
   G_REG_EVERY: 4
   D_REG_EVERY: 16
-  SAMPLE_EVERY: 1000
   STYLE_MIXING_PROB: 0.9
   NV_WEIGHTS_PATH: ''
   CKPT: ''
@@ -51,4 +64,5 @@ EVAL:
     BATCH_SIZE: 64
     N_SAMPLE: 50000
     INCEPTION_CACHE: ''
+    SAMPLE_DIR: ''
 

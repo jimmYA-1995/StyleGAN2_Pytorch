@@ -13,17 +13,20 @@ from yacs.config import CfgNode as CN
 
 
 _C = CN()
+_C.DESCRIPTION = ''
 _C.OUT_DIR = 'results'
 _C.N_SAMPLE = 64
-_C.WORKERS = 4
 _C.RESOLUTION = 256
 
 
 _C.DATASET = CN()
+_C.DATASET.WORKERS = 4
 _C.DATASET.DATASET = 'MultiChannelDataset'
 _C.DATASET.ROOTS = ['/root/notebooks/data/mpii']
 _C.DATASET.SOURCE = ['images']
 _C.DATASET.CHANNELS = [3]
+_C.DATASET.MEAN = [0.5,0.5,0.5]
+_C.DATASET.STD = [0.5,0.5,0.5]
 _C.DATASET.LOAD_IN_MEM = False
 _C.DATASET.FLIP = True
 
@@ -56,6 +59,7 @@ _C.EVAL.FID.EVERY = 0
 _C.EVAL.FID.BATCH_SIZE = 32
 _C.EVAL.FID.N_SAMPLE = 50000
 _C.EVAL.FID.INCEPTION_CACHE = "inception_cache.pkl"
+_C.EVAL.FID.SAMPLE_DIR = ""
 
 
 def update_config(cfg, args):

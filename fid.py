@@ -13,7 +13,6 @@ import matplotlib.pyplot as plt
 
 from models import Generator
 from calc_inception import load_patched_inception_v3
-from misc import parse_args
 from config import config, update_config
 from run_training import get_dataloader
 
