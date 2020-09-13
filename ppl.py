@@ -35,7 +35,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--space', choices=['z', 'w'])
     parser.add_argument('--batch', type=int, default=64)
-    parser.add_argument('--n_sample', type=int, default=5000)
+    parser.add_argument('--n_sample', type=int, default=50000)
     parser.add_argument('--size', type=int, default=256)
     parser.add_argument('--eps', type=float, default=1e-4)
     parser.add_argument('--crop', action='store_true')
@@ -47,7 +47,8 @@ if __name__ == '__main__':
 
     ckpt = torch.load(args.ckpt)
 
-    g = Generator(args.size, latent_dim, 8).to(device)
+    g = Generator(latent_dim, 0, args.size, extra_channels=0, use_sk=False, use_mk=False, is_training=False).to(device)
+    g.eval()
     g.load_state_dict(ckpt['g_ema'])
     g.eval()
 

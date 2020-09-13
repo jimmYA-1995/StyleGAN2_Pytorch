@@ -1,4 +1,6 @@
+import time
 import random
+import logging
 import importlib
 import numpy as np
 import torch
@@ -6,10 +8,12 @@ import torch.nn as nn
 
 from .components import FromRGB, DBlock, minibatch_stddev_layer, Layer, Dense_layer
 
+logger = logging.getLogger()
+
 class Generator(nn.Module):
     def __init__(
             self,
-            latent_size, label_size, resolution,
+            latent_size, label_size, resolution, embedding_size=0,
             dlatents_size=512, is_training=None, return_dlatents=False,
             truncation_psi=0.5, truncation_cut_off=None,
             truncation_psi_val=None, truncation_cut_off_val=None,
@@ -17,9 +21,12 @@ class Generator(nn.Module):
             mapping_network='G_mapping',
             synthesis_netowrk='G_synthesis_stylegan2',
             extra_channels=0,
+            use_sk=False, use_mk=False,
             **kwargs):
         super(Generator, self).__init__()
         
+        if label_size > 0:
+            assert embedding_size > 0 
         # assert is_training is not None
         # if is_training:
         #     truncation_psi = truncation_cut_off = None
@@ -27,7 +34,8 @@ class Generator(nn.Module):
         #     truncation_psi = truncation_psi_val
         #     truncation_cut_off = truncation_cut_off_val
         #     dlatent_avg_beta = None
-
+        self.use_sk = use_sk
+        self.use_mk = use_mk
         self.resolution_log2 = int(np.log2(resolution))
         self.num_layers = self.resolution_log2 * 2 - 2
         assert resolution == 2**self.resolution_log2 and resolution >= 4
@@ -35,9 +43,6 @@ class Generator(nn.Module):
         self.return_dlatents = return_dlatents
         
         self.num_channels = 3
-        if extra_channels > 0:
-            self.use_skeleton = True
-            self.num_channels += extra_channels
             
         # Define arch. of components
         mapping_class = getattr(
@@ -47,15 +52,21 @@ class Generator(nn.Module):
             importlib.import_module('.components', 'models'), synthesis_netowrk
         )
         self.mapping_network = mapping_class(
-            latent_size, label_size, dlatents_size
+            latent_size, label_size, embedding_size, dlatents_size
         )
         self.synthesis_network = synthesis_class(
             self.num_layers, self.resolution_log2,
             num_channels=self.num_channels,
+            use_sk=use_sk, use_mk=use_mk,
             dlatents_size=dlatents_size, architecture='skip'
         )
 
-    def forward(self, latents_in, labels_in=None, return_latents=None):
+    def forward(self, latents_in, labels_in=None, sk=None, mk=None, return_latents=None):
+        if self.use_sk:
+            assert sk is not None, "no skeleton input when use_sk"
+        if self.use_mk:
+            assert mk is not None, "no mask input when use_mk"
+        
         # style mixing
         if len(latents_in) == 2:
             idx = random.randint(1, self.num_layers - 1)
@@ -66,14 +77,33 @@ class Generator(nn.Module):
         else:
             dlatents = self.mapping_network(latents_in[0], labels_in,
                                             dlatent_broadcast=self.num_layers)
-
-        images_out = self.synthesis_network(dlatents)
+        s = time.time()
+        images_out = self.synthesis_network(dlatents, sk=sk, mk=mk)
+        t = time.time() - s
+        # logger.debug('synthesis forward: {:.4f}sec'.format(t))
 
         if return_latents:
             return images_out, dlatents
         return images_out, None
 
-
+    def get_latent(self, latents_in, labels_in=None, sk=None, mk=None, return_latents=None):
+        if self.use_sk:
+            assert sk is not None, "no skeleton input when use_sk"
+        if self.use_mk:
+            assert mk is not None, "no mask input when use_mk"
+        
+        # style mixing
+        if len(latents_in) == 2:
+            idx = random.randint(1, self.num_layers - 1)
+            inject_index = [idx, self.num_layers - idx] ## name confusing
+            dlatents = [self.mapping_network(l, labels_in, dlatent_broadcast=i)
+                        for l, i in zip(latents_in, inject_index)]
+            dlatents = torch.cat(dlatents, dim=1)
+        else:
+            dlatents = self.mapping_network(latents_in[0], labels_in,
+                                            dlatent_broadcast=self.num_layers)
+        return dlatents
+    
 class Discriminator(nn.Module):
     def __init__(
             self, label_size, resolution, extra_channels=3,
@@ -83,7 +113,7 @@ class Discriminator(nn.Module):
             **kwargs):
         super(Discriminator, self).__init__()
         assert architecture in ['skip', 'resnet'], "unsupported D architecture."
-        self.img_channels = extra_channels + 3
+        self.img_channels = 3 # extra_channels + 3
         self.mbstd_group_size = mbstd_group_size
         self.mbstd_num_features = mbstd_num_features
         self.resolution_log2 = int(np.log2(resolution))

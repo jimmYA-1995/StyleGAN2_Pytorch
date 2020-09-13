@@ -50,10 +50,11 @@ def create_logger(out_dir, level='INFO'):
     log_file = out_dir / 'experiment.log'
     head = "%(levelname)-8s - %(asctime)-15s - %(message)s (%(filename)s:%(lineno)d)"
     logging.basicConfig(filename=str(log_file),
-                        format=head,
-                        level=logging.DEBUG)
+                       format=head,
+                       level=logging.DEBUG)
     logger = logging.getLogger()
     
+    print(f"level: {level}")
     console = logging.StreamHandler()
     console.setLevel(getattr(logging, level, 'INFO'))
     console.setFormatter(CustomFormatter())
