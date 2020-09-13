@@ -274,7 +274,9 @@ class Trainer():
                     ]
             transform = transforms.Compose(trf)
             
-            for p in (Path(config.DATASET.ROOTS[0]) / 'sample_sk').glob('*.jpg'):
+            for i, p in enumerate((Path(config.DATASET.ROOTS[0]) / 'sample_sk').glob('*.jpg')):
+                if i == self.n_sample: 
+                    break
                 sample_sk.append(transform(io.imread(p)[..., None])[None, ...])
             sample_sk = torch.cat(sample_sk, dim=0).to('cuda')
             
@@ -479,6 +481,8 @@ class Trainer():
                             'Path Length': path_length_val,
                         }
                     )
+                
+            exit(0)
 
 
 if __name__ == '__main__':
