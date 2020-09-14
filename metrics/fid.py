@@ -72,23 +72,7 @@ class FIDTracker():
             self.logger.info(f"using smaple directory: {fid_config.SAMPLE_DIR}. \
                                 Get {self.cond_samples.shape[0]} conditional sample")
             self.model_bs = self.cond_samples.shape[0]
-        
-        if config.SAMPLE_DIR:
-            import skimage.io as io
-            sample_sk = []
-                
-            trf = [
-                        transforms.ToTensor(),
-                        transforms.Normalize([0.5], [5],
-                                             inplace=True),
-                    ]
-            transform = transforms.Compose(trf)
-            
-            for p in Path(self.config.SAMPLE_DIR).glob('*.jpg'):
-                sample_sk.append(transform(io.imread(p)[..., None])[None, ...])
-            self.sample_sk = torch.cat(sample_sk, dim=0).to('cuda')
-            self.logger.info(f"using smaple directory: {self.config.SAMPLE_DIR}. \
-                                Get {self.sample_sk.shape[0]} skeleton sample")
+
         
         # get inception V3 model
         start = time.time()
