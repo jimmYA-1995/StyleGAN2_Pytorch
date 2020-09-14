@@ -28,6 +28,9 @@ def lerp(a, b, t):
     return a + (b - a) * t
 
 
+
+
+
 if __name__ == '__main__':
     device = 'cuda'
 
@@ -47,8 +50,7 @@ if __name__ == '__main__':
 
     ckpt = torch.load(args.ckpt)
 
-    g = Generator(latent_dim, 0, args.size, extra_channels=0, use_sk=False, use_mk=False, is_training=False).to(device)
-    g.eval()
+    g = Generator(latent_dim, 0, args.size, extra_channels=0, use_sk=True, use_mk=False, is_training=False).to(device)
     g.load_state_dict(ckpt['g_ema'])
     g.eval()
 
@@ -64,7 +66,6 @@ if __name__ == '__main__':
 
     with torch.no_grad():
         for batch in tqdm(batch_sizes):
-            noise = g.make_noise()
 
             inputs = torch.randn([batch * 2, latent_dim], device=device)
             lerp_t = torch.rand(batch, device=device)
@@ -76,7 +77,7 @@ if __name__ == '__main__':
                 latent_e1 = lerp(latent_t0, latent_t1, lerp_t[:, None] + args.eps)
                 latent_e = torch.stack([latent_e0, latent_e1], 1).view(*latent.shape)
 
-            image, _ = g([latent_e], input_is_latent=True, noise=noise)
+            image, _ = g.synthesis_network(latent_e, sk=sk)
 
             if args.crop:
                 c = image.shape[2] // 8

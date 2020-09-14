@@ -20,7 +20,8 @@ class Generator(nn.Module):
             dlatent_avg_beta=0.995,
             mapping_network='G_mapping',
             synthesis_netowrk='G_synthesis_stylegan2',
-            extra_channels=0,
+            randomize_noise=True,
+            extra_channels=0, 
             use_sk=False, use_mk=False,
             **kwargs):
         super(Generator, self).__init__()
@@ -59,6 +60,7 @@ class Generator(nn.Module):
             self.num_layers, self.resolution_log2,
             num_channels=self.num_channels,
             use_sk=use_sk, use_mk=use_mk,
+            randomize_noise=randomize_noise,
             dlatents_size=dlatents_size, architecture='skip'
         )
 
