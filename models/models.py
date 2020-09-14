@@ -13,7 +13,7 @@ logger = logging.getLogger()
 class Generator(nn.Module):
     def __init__(
             self,
-            latent_size, label_size, resolution,
+            latent_size, label_size, resolution, embedding_size=0,
             dlatents_size=512, is_training=None, return_dlatents=False,
             truncation_psi=0.5, truncation_cut_off=None,
             truncation_psi_val=None, truncation_cut_off_val=None,
@@ -26,6 +26,8 @@ class Generator(nn.Module):
             **kwargs):
         super(Generator, self).__init__()
         
+        if label_size > 0:
+            assert embedding_size > 0 
         # assert is_training is not None
         # if is_training:
         #     truncation_psi = truncation_cut_off = None
@@ -42,9 +44,6 @@ class Generator(nn.Module):
         self.return_dlatents = return_dlatents
         
         self.num_channels = 3
-        #if extra_channels > 0:
-        #    self.use_skeleton = True
-        #    self.num_channels += extra_channels
             
         # Define arch. of components
         mapping_class = getattr(
@@ -54,7 +53,7 @@ class Generator(nn.Module):
             importlib.import_module('.components', 'models'), synthesis_netowrk
         )
         self.mapping_network = mapping_class(
-            latent_size, label_size, dlatents_size
+            latent_size, label_size, embedding_size, dlatents_size
         )
         self.synthesis_network = synthesis_class(
             self.num_layers, self.resolution_log2,
@@ -83,7 +82,7 @@ class Generator(nn.Module):
         s = time.time()
         images_out = self.synthesis_network(dlatents, sk=sk, mk=mk)
         t = time.time() - s
-        logger.debug('synthesis forward: {:.4f}sec'.format(t))
+        # logger.debug('synthesis forward: {:.4f}sec'.format(t))
 
         if return_latents:
             return images_out, dlatents

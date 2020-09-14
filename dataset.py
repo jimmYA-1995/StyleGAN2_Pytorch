@@ -44,8 +44,8 @@ class MultiResolutionDataset(data.Dataset):
         buffer = BytesIO(img_bytes)
         img = Image.open(buffer)
         img = self.transform(img)
-
-        return img
+        raise RuntimeError("Not implement conditional for the dataset.")
+        return img, None
 
 
 def ImageFolderDataset(config, resolution, transform=None):
@@ -133,7 +133,7 @@ class MultiChannelDataset(data.Dataset):
             self.data, self.labels = [], []
             for index in tqdm(range(self.length)):
                 path = self.img_paths[index % (self.length // 2)]
-                target = 0 # unconditional for now
+                target = None # unconditional for now
                 flip = index >= (self.length // 2)
                 concat_img = self.loader(path, flip=flip)
                 if self.transform is not None:
@@ -154,7 +154,7 @@ class MultiChannelDataset(data.Dataset):
             path = self.img_paths[index % (self.length // 2)]
             flip = index >= (self.length // 2)
             concat_img = self.loader(path, flip=flip)
-            target = 0
+            target = None
             
             if self.transform is not None:
                 concat_img = self.transform(concat_img)
@@ -205,6 +205,28 @@ def get_dataloader(config, batch_size, distributed=False):
         drop_last=True,
     )
     return loader
+
+def get_dataloader_for_each_class(config, batch_size, distributed=False):
+    dataset = get_dataset(config.DATASET, config.RESOLUTION)
+    data_root = Path(config.DATASET.ROOTS[0])
+    dataloaders = []
+    indices = list(range(len(dataset)))
+    last_idx, cur_idx = 0, 0
+    for i, (label_class, idx) in enumerate(dataset.class_to_idx.items(), 1):
+        cur_idx += len(list((data_root / label_class).glob('*.jpg')))
+        
+        loader = data.DataLoader(
+            dataset,
+            batch_size=batch_size,
+            num_workers=config.DATASET.WORKERS,
+            sampler=data.SubsetRandomSampler(indices[last_idx:cur_idx]),
+            drop_last=True,
+        )
+        dataloaders.append(loader)
+        laslt_idx = cur_idx
+        idx_to_class = {v: k for k,v in dataset.class_to_idx.items()}
+        
+    return dataloaders, idx_to_class
 
 
 if __name__ == "__main__":
