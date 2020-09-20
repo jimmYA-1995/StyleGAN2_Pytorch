@@ -210,11 +210,11 @@ class FIDTracker():
         self.logger.info(f"save FID figure in {str(self.output_path / 'fid.png')}")
         
         self.fids = np.array(self.fids).T
-        plt.legend(tuple([self.idx_to_class[idx] for idx in range(self.num_classes)]),  loc='upper right')
         plt.xlabel('k iterations')
         plt.ylabel('FID')
         for fids in self.fids:
             plt.plot(self.k_iters, fids)
+        plt.legend([self.idx_to_class[idx] for idx in range(self.num_classes)], loc='upper right')
         plt.savefig(self.output_path / 'fid.png')
 
 
