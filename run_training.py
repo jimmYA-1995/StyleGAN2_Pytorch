@@ -540,3 +540,5 @@ if __name__ == '__main__':
     
     if get_rank() == 0 and getattr(trainer, 'fid_tracker') is not None:
         trainer.fid_tracker.plot_fid()
+        (args.out_dir / 'finish.txt').touch()
+    
