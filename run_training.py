@@ -120,6 +120,7 @@ class Trainer():
             if 'mask' in config.DATASET.SOURCE[-1]:
                 self.use_mk = True
         # Define model
+        # TODO: n_class not equal to label size
         self.generator = Generator(self.latent, self.num_classes, self.resolution,
                                    embedding_size=self.embed_size, extra_channels=config.MODEL.EXTRA_CHANNEL,
                                    use_sk=self.use_sk, use_mk=self.use_mk, is_training=True).to(self.device)
@@ -533,7 +534,7 @@ if __name__ == '__main__':
     logger.info(f"trainer initialized. (costs {time() - t})")
 
     if get_rank() == 0 and wandb is not None and args.wandb:
-        wandb.init(project='stylegan2-appendSK')
+        wandb.init(project='stylegan2-DeepFashion_RandomCrop')
     
     logger.info("start training")
     trainer.train()
