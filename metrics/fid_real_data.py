@@ -89,6 +89,11 @@ class FIDTracker():
                 self.real_mean = embeds['mean']
                 self.real_cov = embeds['cov']
                 self.idx_to_class = embeds['idx_to_class']
+        else:
+            self.real_mean, self.real_cov, self.idx_to_class = self.extract_feature_from_real_images(config)
+            self.logger.info(f"save inception cache in {self.output_path}")
+            with open(self.output_path / 'inception_cache.pkl', 'wb') as f:
+                pickle.dump(dict(mean=self.real_mean, cov=self.real_cov, idx_to_class=self.idx_to_class), f)
 
         real_mean, real_cov, _ = self.extract_feature_from_real_images(config)
         self.calc_fid(real_mean, real_cov)
@@ -126,7 +131,7 @@ class FIDTracker():
     @torch.no_grad()
     def extract_feature_from_real_images(self, config):
         dataloaders, idx_to_class = get_dataloader_for_each_class(config, self.config.BATCH_SIZE)
-        assert self.num_classes == len(idx_to_class), "N_CLASSES in user config not equal to #class in dataset"
+        assert self.num_classes == len(idx_to_class), f"N_CLASSES({self.num_classes}) in user config not equal to #class({len(idx_to_class)}) in dataset"
         start = time.time()
         
         real_mean_list = []
@@ -136,9 +141,8 @@ class FIDTracker():
             self.logger.info(f'extract features from real "{idx_to_class[i]}" images...')
             features = []
             loader = sample_data(dataloader)
-        
-            if self.use_tqdm:
-                idx_iterator = tqdm(self.idx_iterator)
+            
+            idx_iterator = tqdm(self.idx_iterator) if self.use_tqdm else self.idx_iterator
             for i in idx_iterator:
                 batch = self.resid if i==self.n_batch else self.config.BATCH_SIZE
                 if batch == 0:
@@ -148,7 +152,7 @@ class FIDTracker():
                 imgs = imgs[:batch, :3, :, :].to(self.device)
                 feature = self.inceptionV3(imgs)[0].view(imgs.shape[0], -1)
                 features.append(feature.to('cpu'))
-
+            
             features = torch.cat(features, 0).numpy()
             real_mean = np.mean(features, 0)
             real_cov = np.cov(features, rowvar=False)
@@ -204,20 +208,16 @@ class FIDTracker():
 
 
 if __name__ == '__main__':
-    
-    import sys
-    from models import Generator
     from config import config, update_config
-    from run_training import get_dataloader
+
     device = 'cuda'
     parser = argparse.ArgumentParser()
-
-
     parser.add_argument("--cfg", required=True, help="path to the configuration file")
     parser.add_argument('--out_dir', type=str, default='/tmp/fid_result')
-                      
     args = parser.parse_args()
-
+    
+    logging.basicConfig(level='DEBUG')
     update_config(config, args)
+    print("init.")
     _ = FIDTracker(config, args.out_dir, use_tqdm=True)
     
