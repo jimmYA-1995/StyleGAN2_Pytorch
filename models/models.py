@@ -135,9 +135,10 @@ class Discriminator(nn.Module):
         # output layer
         self.conv_out = Layer(nf(1)+1, nf(1), kernel=3, use_bias=False)
         self.dense_out = Dense_layer(512 * 4 * 4, nf(0))
-        self.label_out = Dense_layer(nf(0), max(label_size, 1))
+        self.label_out_S = Dense_layer(nf(0), max(label_size, 1))
+        self.label_out_C = Dense_layer(nf(0), max(label_size, 1))
 
-    def forward(self, images_in, labels_in=None):
+    def forward(self, images_in):
         assert images_in.shape[1] == self.img_channels, \
                f"(D) channel unmatched. {images_in.shape[1]} v.s. {self.img_channels}"
         x = None
@@ -157,8 +158,8 @@ class Discriminator(nn.Module):
         x = self.conv_out(x)
         x = x.view(x.shape[0], -1)
         x = self.dense_out(x)
-        out = self.label_out(x)
-        if labels_in is not None and labels_in.shape[1] > 0:
-            out = torch.mean(out * labels_in, dim=1, keepdims=True)
+        out_S = self.label_out_S(x)
+        # not using label info. to conditional output pred.
+        out_C = self.label_out_C(x)
             
-        return out
+        return out_S, out_C

@@ -11,6 +11,8 @@ from torchvision import transforms
 from torchvision.datasets import ImageFolder
 
 
+ALLOW_EXTS = ['jpg', 'jpeg', 'png', 'JPEG']
+
 class MultiResolutionDataset(data.Dataset):
     def __init__(self, config, resolution, transform=None):
         path = config.ROOTS[0]
@@ -213,7 +215,8 @@ def get_dataloader_for_each_class(config, batch_size, distributed=False):
     indices = list(range(len(dataset)))
     last_idx, cur_idx = 0, 0
     for i, (label_class, idx) in enumerate(dataset.class_to_idx.items(), 1):
-        cur_idx += len(list((data_root / label_class).glob('*.jpg')))
+        for ext in ALLOW_EXTS:
+            cur_idx += len(list((data_root / label_class).glob(f'*.{ext}')))
         
         loader = data.DataLoader(
             dataset,
@@ -223,7 +226,7 @@ def get_dataloader_for_each_class(config, batch_size, distributed=False):
             drop_last=True,
         )
         dataloaders.append(loader)
-        laslt_idx = cur_idx
+        last_idx = cur_idx
         idx_to_class = {v: k for k,v in dataset.class_to_idx.items()}
         
     return dataloaders, idx_to_class

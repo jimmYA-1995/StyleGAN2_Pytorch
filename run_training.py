@@ -120,12 +120,12 @@ class Trainer():
             if 'mask' in config.DATASET.SOURCE[-1]:
                 self.use_mk = True
         # Define model
-        # TODO: n_class not equal to label size
-        self.generator = Generator(self.latent, self.num_classes, self.resolution,
+        label_size = 0 if self.num_classes == 1 else self.num_classes
+        self.generator = Generator(self.latent, label_size, self.resolution,
                                    embedding_size=self.embed_size, extra_channels=config.MODEL.EXTRA_CHANNEL,
                                    use_sk=self.use_sk, use_mk=self.use_mk, is_training=True).to(self.device)
-        self.discriminator = Discriminator(0, self.resolution, extra_channels=config.MODEL.EXTRA_CHANNEL).to(self.device)
-        self.g_ema = Generator(self.latent, self.num_classes, self.resolution,
+        self.discriminator = Discriminator(label_size, self.resolution, extra_channels=config.MODEL.EXTRA_CHANNEL).to(self.device)
+        self.g_ema = Generator(self.latent, label_size, self.resolution,
                                embedding_size=self.embed_size, extra_channels=config.MODEL.EXTRA_CHANNEL,
                                use_sk=self.use_sk, use_mk=self.use_mk, is_training=False).to(self.device)
         self.g_ema.eval()
@@ -250,8 +250,11 @@ class Trainer():
 
         # init. all 
         mean_path_length = 0
-        g_loss_val = 0
-        d_loss_val = 0
+        g_GANloss_val = 0
+        g_CFakeloss_val = 0
+        d_GANloss_val = 0
+        d_CRealloss_val = 0
+        d_CFakeloss_val = 0
         r1_loss = torch.tensor(0.0, device=self.device)
         path_loss = torch.tensor(0.0, device=self.device)
         path_lengths = torch.tensor(0.0, device=self.device)
@@ -322,14 +325,20 @@ class Trainer():
             fake_label = torch.randint(self.num_classes, (self.batch_size,)).to(self.device) \
                          if self.num_classes > 0 else None
             fake_img, _ = self.generator(noise, labels_in=fake_label, sk=real_sk, mk=real_mk)
-            fake_pred = self.discriminator(fake_img)
-            real_pred = self.discriminator(real_img)
+            fake_pred_S, fake_pred_C = self.discriminator(fake_img)
+            real_pred_S, real_pred_C = self.discriminator(real_img)
 
-            d_loss = logistic_loss(real_pred, fake_pred)
+            d_GAN_loss = logistic_loss(real_pred_S, fake_pred_S)
+            d_CReal_loss = torch.nn.CrossEntropyLoss()(real_pred_C, labels)
+            d_CFake_loss = torch.nn.CrossEntropyLoss()(fake_pred_C, fake_label)
+            
+            d_loss = d_GAN_loss + d_CReal_loss + d_CFake_loss
 
-            loss_dict['d'] = d_loss
-            loss_dict['real_score'] = real_pred.mean()
-            loss_dict['fake_score'] = fake_pred.mean()
+            loss_dict['d_GAN'] = d_GAN_loss
+            loss_dict['d_CReal'] = d_CReal_loss
+            loss_dict['d_CFake'] = d_CFake_loss            
+            loss_dict['real_score'] = real_pred_S.mean()
+            loss_dict['fake_score'] = fake_pred_S.mean()
 
             self.discriminator.zero_grad()
             d_loss.backward()
@@ -338,11 +347,11 @@ class Trainer():
             d_regularize = i % self.d_reg_every == 0
             if d_regularize:
                 real_img.requires_grad = True
-                real_pred = self.discriminator(real_img)
+                real_pred, _ = self.discriminator(real_img)
                 r1_loss = d_r1_loss(real_pred, real_img)
 
                 self.discriminator.zero_grad()
-                (self.r1 / 2 * r1_loss * self.d_reg_every + 0 * real_pred[0]).backward()
+                (self.r1 / 2 * r1_loss * self.d_reg_every).backward()
                 self.d_optim.step()
 
             loss_dict['r1'] = r1_loss
@@ -354,10 +363,13 @@ class Trainer():
             fake_label = torch.randint(self.num_classes, (self.batch_size,)).to(self.device) \
                          if self.num_classes > 0 else None
             fake_img, _ = self.generator(noise, labels_in=fake_label, sk=real_sk, mk=real_mk)
-            fake_pred = self.discriminator(fake_img)
-            g_loss = nonsaturating_loss(fake_pred)
+            fake_pred_S, fake_pred_C = self.discriminator(fake_img)
+            g_GAN_loss = nonsaturating_loss(fake_pred_S)
+            g_CFake_loss = torch.nn.CrossEntropyLoss()(fake_pred_C, fake_label)
+            g_loss = g_GAN_loss + g_CFake_loss
 
-            loss_dict['g'] = g_loss
+            loss_dict['g_GAN'] = g_GAN_loss
+            loss_dict['g_CFake'] = g_CFake_loss
 
             self.generator.zero_grad()
             g_loss.backward()
@@ -408,8 +420,11 @@ class Trainer():
 
             loss_reduced = reduce_loss_dict(loss_dict)
 
-            d_loss_val = loss_reduced['d'].mean().item()
-            g_loss_val = loss_reduced['g'].mean().item()
+            d_GANloss_val = loss_reduced['d_GAN'].mean().item()
+            d_CRealloss_val = loss_reduced['d_CReal'].mean().item()
+            d_CFakeloss_val = loss_reduced['d_CFake'].mean().item()
+            g_GANloss_val = loss_reduced['g_GAN'].mean().item()
+            g_CFakeloss_val = loss_reduced['g_CFake'].mean().item()
             r1_val = loss_reduced['r1'].mean().item()
             path_loss_val = loss_reduced['path'].mean().item()
             real_score_val = loss_reduced['real_score'].mean().item()
@@ -419,7 +434,8 @@ class Trainer():
             if get_rank() == 0:
                 pbar.set_description(
                     (
-                        f'd: {d_loss_val:.4f}; g: {g_loss_val:.4f}; r1: {r1_val:.4f}; '
+                        f'd_GAN: {d_GANloss_val:.4f}; d_CR: {d_CRealloss_val:.4f}; d_CF: {d_CFakeloss_val:.4f}; '
+                        f'g_GAN: {g_GANloss_val:.4f}; g_CF: {g_CFakeloss_val:.4f}; r1: {r1_val:.4f}; '
                         f'path: {path_loss_val:.4f}; mean path: {mean_path_length_avg:.4f}'
                     )
                 )
@@ -483,8 +499,11 @@ class Trainer():
                     wandb.log(
                         {
                             'training time': time() - s,
-                            'Generator': g_loss_val,
-                            'Discriminator': d_loss_val,
+                            'Generator-GAN': g_GANloss_val,
+                            'Generator-CF': g_CFakeloss_val,
+                            'Discriminator-GAN': d_GANloss_val,
+                            'Discriminator-CR': d_CRealloss_val,
+                            'Discriminator-CF': d_CFakeloss_val,
                             'R1': r1_val,
                             'Path Length Regularization': path_loss_val,
                             'Mean Path Length': mean_path_length,
