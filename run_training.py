@@ -120,11 +120,12 @@ class Trainer():
             if 'mask' in config.DATASET.SOURCE[-1]:
                 self.use_mk = True
         # Define model
-        self.generator = Generator(self.latent, self.num_classes, self.resolution,
+        label_size = 0 if self.num_classes == 1 else self.num_classes
+        self.generator = Generator(self.latent, label_size, self.resolution,
                                    embedding_size=self.embed_size, extra_channels=config.MODEL.EXTRA_CHANNEL,
                                    use_sk=self.use_sk, use_mk=self.use_mk, is_training=True).to(self.device)
-        self.discriminator = Discriminator(0, self.resolution, extra_channels=config.MODEL.EXTRA_CHANNEL).to(self.device)
-        self.g_ema = Generator(self.latent, self.num_classes, self.resolution,
+        self.discriminator = Discriminator(label_size, self.resolution, extra_channels=config.MODEL.EXTRA_CHANNEL).to(self.device)
+        self.g_ema = Generator(self.latent, label_size, self.resolution,
                                embedding_size=self.embed_size, extra_channels=config.MODEL.EXTRA_CHANNEL,
                                use_sk=self.use_sk, use_mk=self.use_mk, is_training=False).to(self.device)
         self.g_ema.eval()
