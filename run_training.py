@@ -5,6 +5,7 @@ import random
 import logging
 from time import time
 from pathlib import Path
+from pprint import pformat
 
 import numpy as np
 import torch
@@ -120,6 +121,7 @@ class Trainer():
             if 'mask' in config.DATASET.SOURCE[-1]:
                 self.use_mk = True
         # Define model
+        assert self.num_classes >= 1
         label_size = 0 if self.num_classes == 1 else self.num_classes
         self.generator = Generator(self.latent, label_size, self.resolution,
                                    embedding_size=self.embed_size, extra_channels=config.MODEL.EXTRA_CHANNEL,
@@ -517,8 +519,6 @@ if __name__ == '__main__':
         print("print function overriden")
     
     logger, args.out_dir = prepare_training(config, args.cfg, debug=args.debug)
-    
-    
     if not logger:
         # add process info to slave process
         log_format = '<SLAVE{}> %(levelname)-8s %(asctime)-15s %(message)s'.format(get_rank())
@@ -526,8 +526,8 @@ if __name__ == '__main__':
                             format=log_format)
         logger = logging.getLogger()
 
+    logger.debug(pformat(config))
     logger.info("Only keep logs of master in log file")
-    
     logger.info("initialize trainer...")
     t = time()
     trainer = Trainer(args, config, logger)
