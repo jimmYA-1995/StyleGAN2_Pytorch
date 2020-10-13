@@ -244,7 +244,7 @@ if __name__ == '__main__':
     update_config(config, args)
 
     use_cond_sample = True if config.EVAL.FID.SAMPLE_DIR else False
-    fid_tracker = FIDTracker(config, args.out_dir)
+    fid_tracker = FIDTracker(config, args.out_dir, use_tqdm=True)
 
     if not args.ckpt:
         print("checkpoint(s) not found. Only get features of real images.\n return...")
@@ -263,8 +263,12 @@ if __name__ == '__main__':
         ckpt = torch.load(ckpt)
         
         # latent_dim, label_size, resolution
-        g = Generator(config.MODEL.LATENT_SIZE, 0, config.RESOLUTION,
-                      extra_channels=config.MODEL.EXTRA_CHANNEL, use_sk=use_cond_sample).to(device)
+        assert config.N_CLASSES >= 1, f"#classes must greater than 0"
+        label_size = 0 if config.N_CLASSES == 1 else config.N_CLASSES
+        g = Generator(config.MODEL.LATENT_SIZE, label_size, config.RESOLUTION,
+                      embedding_size=config.MODEL.EMBEDDING_SIZE,
+                      extra_channels=config.MODEL.EXTRA_CHANNEL,
+                      use_sk=use_cond_sample, is_training=False).to(device)
         g.load_state_dict(ckpt['g_ema'])
         g = nn.DataParallel(g)
         g.eval()
