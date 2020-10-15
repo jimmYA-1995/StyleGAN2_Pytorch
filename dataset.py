@@ -50,8 +50,10 @@ class MultiResolutionDataset(data.Dataset):
         return img, None
 
 
-def ImageFolderDataset(config, resolution, transform=None):
-    path = config.ROOTS[0]
+def ImageFolderDataset(config, resolution, transform=None, is_validation=False):
+    if is_validation:
+        print("using validation dataset")
+    path = config.ROOTS[int(is_validation)]
     def image_loader(path):
         try:
             img = Image.open(path)
@@ -185,7 +187,7 @@ def data_sampler(dataset, shuffle, distributed):
     else:
         return data.SequentialSampler(dataset)
 
-def get_dataset(config, resolution):
+def get_dataset(config, resolution, **kwargs):
     # config.DATASET
     trf = [
         transforms.ToTensor(),
@@ -193,7 +195,7 @@ def get_dataset(config, resolution):
     ]
     transform = transforms.Compose(trf)
     Dataset = globals().get(config.DATASET)
-    dataset = Dataset(config, resolution, transform=transform)
+    dataset = Dataset(config, resolution, transform=transform, **kwargs)
     return dataset   
     
 def get_dataloader(config, batch_size, distributed=False):
@@ -208,9 +210,9 @@ def get_dataloader(config, batch_size, distributed=False):
     )
     return loader
 
-def get_dataloader_for_each_class(config, batch_size, distributed=False):
-    dataset = get_dataset(config.DATASET, config.RESOLUTION)
-    data_root = Path(config.DATASET.ROOTS[0])
+def get_dataloader_for_each_class(config, batch_size, is_validation=False, distributed=False):
+    dataset = get_dataset(config.DATASET, config.RESOLUTION, is_validation=is_validation)
+    data_root = Path(config.DATASET.ROOTS[int(is_validation)])
     dataloaders = []
     indices = list(range(len(dataset)))
     last_idx, cur_idx = 0, 0

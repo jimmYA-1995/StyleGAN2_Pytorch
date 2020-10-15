@@ -20,12 +20,12 @@ try:
 except ImportError:
     wandb = None
 
-from dataset import get_dataset, get_dataloader
+from dataset import get_dataset, get_dataloader, get_dataloader_for_each_class
 from misc import parse_args, prepare_training
 from load_weights import load_weights_from_nv
 from models import Generator, Discriminator
 from losses import nonsaturating_loss, path_regularize, logistic_loss, d_r1_loss
-from metrics import FIDTracker
+from metrics import FIDTracker, AccuracyTracker
 from config import config, update_config
 from distributed import (
     master_only,
@@ -77,6 +77,7 @@ def set_grad_none(model, targets):
         if n in targets:
             p.grad = None
 
+            
 class Trainer():
     def __init__(self, args, config, logger):
         
@@ -106,6 +107,7 @@ class Trainer():
         self.path_batch_shrink = config.TRAIN.PATH_BATCH_SHRINK
         
         self.fid_tracker = None
+        self.acc_tracker = None
         
         # datset
         print("get dataloader ...")
@@ -234,7 +236,11 @@ class Trainer():
             if get_rank() == 0:
                 self.fid_tracker = FIDTracker(config, self.out_dir, use_tqdm=True)
             synchronize()
-            
+        if 'acc' in config.EVAL.METRICS.split(','):
+            if get_rank() == 0:
+                self.acc_tracker = AccuracyTracker(config, self.out_dir, use_tqdm=True)
+            synchronize()
+
     def train(self):
         cfg_d = self.config.DATASET
         cfg_t = self.config.TRAIN
@@ -419,6 +425,11 @@ class Trainer():
                 k_iter = (i+1) / 1000
                 self.g_ema.eval()
                 self.fid_tracker.calc_fid(self.g_ema, k_iter, save=True)
+            
+            if get_rank() == 0 and self.acc_tracker is not None and \
+                (i == 0 or (i+1) % self.config.EVAL.ACC.EVERY == 0):
+                k_iter = (i+1) / 1000
+                self.acc_tracker.calc_accuracy(self.discriminator, k_iter, save=True)
 
             loss_reduced = reduce_loss_dict(loss_dict)
 
@@ -558,7 +569,11 @@ if __name__ == '__main__':
     logger.info("start training")
     trainer.train()
     
-    if get_rank() == 0 and getattr(trainer, 'fid_tracker') is not None:
-        trainer.fid_tracker.plot_fid()
+    if get_rank() == 0:
+        if getattr(trainer, 'fid_tracker') is not None:
+            trainer.fid_tracker.plot_fid()
+        if getattr(trainer, 'acc_tracker') is not None:
+            trainer.acc_tracker.plot_result()
         (args.out_dir / 'finish.txt').touch()
+            
     
