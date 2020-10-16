@@ -262,7 +262,6 @@ class Trainer():
         g_CFakeloss_val = 0
         d_GANloss_val = 0
         d_CRealloss_val = 0
-        d_CFakeloss_val = 0
         r1_loss = torch.tensor(0.0, device=self.device)
         path_loss = torch.tensor(0.0, device=self.device)
         path_lengths = torch.tensor(0.0, device=self.device)
@@ -333,18 +332,16 @@ class Trainer():
             fake_label = torch.randint(self.num_classes, (self.batch_size,)).to(self.device) \
                          if self.num_classes > 0 else None
             fake_img, _ = self.generator(noise, labels_in=fake_label, sk=real_sk, mk=real_mk)
-            fake_pred_S, fake_pred_C = self.discriminator(fake_img)
+            fake_pred_S, _ = self.discriminator(fake_img)
             real_pred_S, real_pred_C = self.discriminator(real_img)
 
             d_GAN_loss = logistic_loss(real_pred_S, fake_pred_S)
             d_CReal_loss = torch.nn.CrossEntropyLoss()(real_pred_C, labels)
-            d_CFake_loss = torch.nn.CrossEntropyLoss()(fake_pred_C, fake_label)
             
-            d_loss = d_GAN_loss + d_CReal_loss + d_CFake_loss
+            d_loss = d_GAN_loss + cfg_t.ALPHA_D * d_CReal_loss
 
             loss_dict['d_GAN'] = d_GAN_loss
-            loss_dict['d_CReal'] = d_CReal_loss
-            loss_dict['d_CFake'] = d_CFake_loss            
+            loss_dict['d_CReal'] = d_CReal_loss         
             loss_dict['real_score'] = real_pred_S.mean()
             loss_dict['fake_score'] = fake_pred_S.mean()
 
@@ -435,7 +432,6 @@ class Trainer():
 
             d_GANloss_val = loss_reduced['d_GAN'].mean().item()
             d_CRealloss_val = loss_reduced['d_CReal'].mean().item()
-            d_CFakeloss_val = loss_reduced['d_CFake'].mean().item()
             g_GANloss_val = loss_reduced['g_GAN'].mean().item()
             g_CFakeloss_val = loss_reduced['g_CFake'].mean().item()
             r1_val = loss_reduced['r1'].mean().item()
@@ -447,7 +443,7 @@ class Trainer():
             if get_rank() == 0:
                 pbar.set_description(
                     (
-                        f'd_GAN: {d_GANloss_val:.4f}; d_CR: {d_CRealloss_val:.4f}; d_CF: {d_CFakeloss_val:.4f}; '
+                        f'd_GAN: {d_GANloss_val:.4f}; d_CR: {d_CRealloss_val:.4f}; '
                         f'g_GAN: {g_GANloss_val:.4f}; g_CF: {g_CFakeloss_val:.4f}; r1: {r1_val:.4f}; '
                         f'path: {path_loss_val:.4f}; mean path: {mean_path_length_avg:.4f}'
                     )
@@ -516,7 +512,6 @@ class Trainer():
                             'Generator-CF': g_CFakeloss_val,
                             'Discriminator-GAN': d_GANloss_val,
                             'Discriminator-CR': d_CRealloss_val,
-                            'Discriminator-CF': d_CFakeloss_val,
                             'R1': r1_val,
                             'Path Length Regularization': path_loss_val,
                             'Mean Path Length': mean_path_length,
