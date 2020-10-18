@@ -2,6 +2,7 @@ import time
 import logging
 import argparse
 from pathlib import Path
+from tqdm import tqdm
 
 import torch
 import numpy as np
@@ -19,6 +20,7 @@ class AccuracyTracker():
         self.batch_size = config.EVAL.ACC.BATCH_SIZE
         self.n_samples = config.EVAL.ACC.N_SAMPLE
         self.loaders, self.idx_to_class = get_dataloader_for_each_class(config, self.batch_size, is_validation=True)
+        self.use_tqdm = use_tqdm
         self.logger = logging.getLogger()
         self.output_path = Path(out_dir)
         if not self.output_path.exists():
@@ -35,7 +37,8 @@ class AccuracyTracker():
         for loader in self.loaders:
             total = 0
             correct = 0
-            for i, (real_img, labels) in enumerate(loader):
+            loader = tqdm(enumerate(loader)) if self.use_tqdm else enumerate(loader)
+            for i, (real_img, labels) in loader:
                 real_img = real_img.to(self.device)
                 if labels is not None:
                     labels = labels.to(self.device)
