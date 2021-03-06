@@ -214,3 +214,52 @@ def load_weights_from_nv(g, d, g_ema, path):
 
         with torch.no_grad():
             d_dict[my].copy_(torch.from_numpy(nv_w))
+            
+
+            
+def load_partial_weights(g, d, g_ema, ckpt, logger=None):
+    try:
+        for k,v in self.generator.named_parameters():
+            if 'trgb' in k:
+                if 'conv.w' in k:
+                    with torch.no_grad():
+                        v[:3, ...].copy_(ckpt['g'][k])
+                elif 'bias' in k:
+                    with torch.no_grad():
+                        v[:, :3, ...].copy_(ckpt['g'][k])
+                else:
+                    with torch.no_grad():
+                        v.copy_(ckpt['g'][k])
+            else:
+                with torch.no_grad():
+                    v.copy_(ckpt['g'][k])
+                v.requires_grad = False
+
+        for k,v in self.discriminator.named_parameters():
+            if 'frgb' in k:
+                if 'conv.w' in k:
+                    with torch.no_grad():
+                        v[:, :3, ...].copy_(ckpt['d'][k])
+            else:
+                with torch.no_grad():
+                    v.copy_(ckpt['d'][k])
+                v.requires_grad = False
+
+        for k,v in self.g_ema.named_parameters():
+            if 'trgb' in k:
+                if 'conv.w' in k:
+                    with torch.no_grad():
+                        v[:3, ...].copy_(ckpt['g_ema'][k])
+                elif 'bias' in k:
+                    with torch.no_grad():
+                        v[:, :3, ...].copy_(ckpt['g_ema'][k])
+            else:
+                with torch.no_grad():
+                    v.copy_(ckpt['g_ema'][k])
+        if logger:
+            logger.info("Transfer learning. Set start iteration to 0")
+        return 0
+    except RuntimeError:
+        if logger:
+            logger.error(" ***** fail to load partial weights to models ***** ")
+        raise RuntimeError("fail to load partial weights to models. Please check your checkpoint")

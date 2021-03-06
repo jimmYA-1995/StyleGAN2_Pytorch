@@ -22,7 +22,7 @@ except ImportError:
 
 from dataset import get_dataset, get_dataloader
 from misc import parse_args, prepare_training
-from load_weights import load_weights_from_nv
+from load_weights import load_weights_from_nv, load_partial_weights
 from models import Generator, Discriminator
 from losses import nonsaturating_loss, path_regularize, logistic_loss, d_r1_loss
 from metrics import FIDTracker
@@ -169,50 +169,9 @@ class Trainer():
                 self.g_optim.load_state_dict(ckpt['g_optim'])
                 self.d_optim.load_state_dict(ckpt['d_optim'])
             except RuntimeError:
-                logger.warn(" ******* using hacky way to load partial weight to model ******* ")
-                try:
-                    for k,v in self.generator.named_parameters():
-                        if 'trgb' in k:
-                            if 'conv.w' in k:
-                                with torch.no_grad():
-                                    v[:3, ...].copy_(ckpt['g'][k])
-                            elif 'bias' in k:
-                                with torch.no_grad():
-                                    v[:, :3, ...].copy_(ckpt['g'][k])
-                            else:
-                                with torch.no_grad():
-                                    v.copy_(ckpt['g'][k])
-                        else:
-                            with torch.no_grad():
-                                v.copy_(ckpt['g'][k])
-                            v.requires_grad = False
-                                
-                    for k,v in self.discriminator.named_parameters():
-                        if 'frgb' in k:
-                            if 'conv.w' in k:
-                                with torch.no_grad():
-                                    v[:, :3, ...].copy_(ckpt['d'][k])
-                        else:
-                            with torch.no_grad():
-                                v.copy_(ckpt['d'][k])
-                            v.requires_grad = False
-                                
-                    for k,v in self.g_ema.named_parameters():
-                        if 'trgb' in k:
-                            if 'conv.w' in k:
-                                with torch.no_grad():
-                                    v[:3, ...].copy_(ckpt['g_ema'][k])
-                            elif 'bias' in k:
-                                with torch.no_grad():
-                                    v[:, :3, ...].copy_(ckpt['g_ema'][k])
-                        else:
-                            with torch.no_grad():
-                                v.copy_(ckpt['g_ema'][k])
-                    logger.info("Transfer learning. Set start iteration to 0")
-                    self.start_iter = 0
-                except RuntimeError:
-                    logger.error(" ***** fail to load partial weights to models ***** ")
-                     
+                logger.warn(" *** using hacky way to load partial weight to model *** ")
+                self.start_iter = load_partial_weights(
+                    self.generator, self.discriminator, self.g_ema, ckpt, logger=logger)
 
         if self.distributed:
             self.generator = nn.parallel.DistributedDataParallel(
