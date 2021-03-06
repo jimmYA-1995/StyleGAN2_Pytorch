@@ -5,6 +5,7 @@ import random
 import logging
 from time import time
 from pathlib import Path
+from pprint import pformat
 
 import numpy as np
 import torch
@@ -21,7 +22,7 @@ except ImportError:
 
 from dataset import get_dataset, get_dataloader
 from misc import parse_args, prepare_training
-from load_weights import load_weights_from_nv
+from load_weights import load_weights_from_nv, load_partial_weights
 from models import Generator, Discriminator
 from losses import nonsaturating_loss, path_regularize, logistic_loss, d_r1_loss
 from metrics import FIDTracker
@@ -77,14 +78,14 @@ def set_grad_none(model, targets):
             p.grad = None
 
 class Trainer():
-    def __init__(self, args, config, logger):
+    def __init__(self, args, config, logger, ddp=False):
         
         # dummy. mod. in the future
         self.device = 'cuda'
         self.config = config
         self.logger = logger
         self.local_rank = args.local_rank
-        self.distributed = args.distributed
+        self.distributed = ddp
         self.out_dir = args.out_dir
         self.use_wandb = args.wandb
         self.n_sample = config.N_SAMPLE
@@ -109,24 +110,27 @@ class Trainer():
         # datset
         print("get dataloader ...")
         t = time()
-        self.loader = get_dataloader(config, self.batch_size, distributed=args.distributed)
+        self.loader = get_dataloader(config, self.batch_size, distributed=ddp)
         print(f"get dataloader complete ({time() - t})")
         
-        self.use_sk = False
-        self.use_mk = False
-        if config.MODEL.EXTRA_CHANNEL > 0:
-            if 'skeleton' in config.DATASET.SOURCE[1]:
-                self.use_sk = True
-            if 'mask' in config.DATASET.SOURCE[-1]:
-                self.use_mk = True
         # Define model
-        self.generator = Generator(self.latent, self.num_classes, self.resolution,
-                                   embedding_size=self.embed_size, extra_channels=config.MODEL.EXTRA_CHANNEL,
-                                   use_sk=self.use_sk, use_mk=self.use_mk, is_training=True).to(self.device)
-        self.discriminator = Discriminator(0, self.resolution, extra_channels=config.MODEL.EXTRA_CHANNEL).to(self.device)
-        self.g_ema = Generator(self.latent, self.num_classes, self.resolution,
-                               embedding_size=self.embed_size, extra_channels=config.MODEL.EXTRA_CHANNEL,
-                               use_sk=self.use_sk, use_mk=self.use_mk, is_training=False).to(self.device)
+        assert self.num_classes >= 1
+        label_size = 0 if self.num_classes == 1 else self.num_classes
+        self.generator = Generator(self.latent,
+                                   label_size,
+                                   self.resolution,
+                                   embedding_size=self.embed_size,
+                                   extra_channels=config.MODEL.EXTRA_CHANNEL,
+                                   is_training=True).to(self.device)
+        self.discriminator = Discriminator(label_size,
+                                           self.resolution,
+                                           extra_channels=config.MODEL.EXTRA_CHANNEL).to(self.device)
+        self.g_ema = Generator(self.latent,
+                               label_size,
+                               self.resolution,
+                               embedding_size=self.embed_size,
+                               extra_channels=config.MODEL.EXTRA_CHANNEL,
+                               is_training=False).to(self.device)
         self.g_ema.eval()
         accumulate(self.g_ema, self.generator, 0)
         
@@ -166,50 +170,9 @@ class Trainer():
                 self.g_optim.load_state_dict(ckpt['g_optim'])
                 self.d_optim.load_state_dict(ckpt['d_optim'])
             except RuntimeError:
-                logger.warn(" ******* using hacky way to load partial weight to model ******* ")
-                try:
-                    for k,v in self.generator.named_parameters():
-                        if 'trgb' in k:
-                            if 'conv.w' in k:
-                                with torch.no_grad():
-                                    v[:3, ...].copy_(ckpt['g'][k])
-                            elif 'bias' in k:
-                                with torch.no_grad():
-                                    v[:, :3, ...].copy_(ckpt['g'][k])
-                            else:
-                                with torch.no_grad():
-                                    v.copy_(ckpt['g'][k])
-                        else:
-                            with torch.no_grad():
-                                v.copy_(ckpt['g'][k])
-                            v.requires_grad = False
-                                
-                    for k,v in self.discriminator.named_parameters():
-                        if 'frgb' in k:
-                            if 'conv.w' in k:
-                                with torch.no_grad():
-                                    v[:, :3, ...].copy_(ckpt['d'][k])
-                        else:
-                            with torch.no_grad():
-                                v.copy_(ckpt['d'][k])
-                            v.requires_grad = False
-                                
-                    for k,v in self.g_ema.named_parameters():
-                        if 'trgb' in k:
-                            if 'conv.w' in k:
-                                with torch.no_grad():
-                                    v[:3, ...].copy_(ckpt['g_ema'][k])
-                            elif 'bias' in k:
-                                with torch.no_grad():
-                                    v[:, :3, ...].copy_(ckpt['g_ema'][k])
-                        else:
-                            with torch.no_grad():
-                                v.copy_(ckpt['g_ema'][k])
-                    logger.info("Transfer learning. Set start iteration to 0")
-                    self.start_iter = 0
-                except RuntimeError:
-                    logger.error(" ***** fail to load partial weights to models ***** ")
-                     
+                logger.warn(" *** using hacky way to load partial weight to model *** ")
+                self.start_iter = load_partial_weights(
+                    self.generator, self.discriminator, self.g_ema, ckpt, logger=logger)
 
         if self.distributed:
             self.generator = nn.parallel.DistributedDataParallel(
@@ -227,10 +190,9 @@ class Trainer():
             )
         
         # init. FID tracker if needed.
-        if 'fid' in config.EVAL.METRICS.split(','):
-            if get_rank() == 0:
-                self.fid_tracker = FIDTracker(config, self.out_dir, use_tqdm=True)
-            synchronize()
+        if 'fid' in config.EVAL.METRICS.split(',') and get_rank() == 0:
+            self.fid_tracker = FIDTracker(config, self.out_dir, use_tqdm=True)
+        synchronize()
             
     def train(self):
         cfg_d = self.config.DATASET
@@ -264,63 +226,33 @@ class Trainer():
             g_module = self.generator
             d_module = self.discriminator
 
-        accum = 0.5 ** (32 / (10 * 1000))
+        accum = 0.5 ** (32 / (10 * 1000)) ##
 
         sample_z = torch.randn(self.n_sample, self.latent, device=self.device)
         fixed_fake_label = torch.randint(self.num_classes, (sample_z.shape[0],)).to(self.device) \
-                           if self.num_classes > 0 else None
+                           if self.num_classes > 1 else None
         self.logger.debug(f"sample vector: {sample_z.shape}")
-        sample_sk, sample_mk = None, None
-        if self.use_sk:
-            import skimage.io as io
-            sample_sk = []
-                
-            trf = [
-                        transforms.ToTensor(),
-                        transforms.Normalize([0.5], [5],
-                                             inplace=True),
-                    ]
-            transform = transforms.Compose(trf)
-            
-            for i, p in enumerate((Path(config.DATASET.ROOTS[0]) / 'sample_sk').glob('*.jpg')):
-                if i == self.n_sample: 
-                    break
-                sample_sk.append(transform(io.imread(p)[..., None])[None, ...])
-            sample_sk = torch.cat(sample_sk, dim=0).to('cuda')
-            
-
-            self.logger.debug(f"sample sk: {sample_sk.shape}, {sample_sk.max()}, {sample_sk.min()}, {type(sample_sk)}")
         
         # start training
         for i in pbar:
             s = time()
-            real_img, labels = next(loader)
-            real_img = real_img.to(self.device)
-            if labels is not None:
+            real_img = labels = None
+            batch = next(loader)
+            if self.num_classes > 1:
+                real_img, labels = batch
                 labels = labels.to(self.device)
-
-            self.logger.debug(f"input shape: {real_img.shape}")
-            real_sk = real_mk = None
-            if not self.use_sk:
-                real_img = real_img[:, :3, ...]
             else:
-                if real_img.shape[1] == 4:
-                    real_sk = real_img[:, 3:, ...]
-                    real_img = real_img[:, :3, ...]
-                elif real_img.shape[1] == 5:
-                    real_mk = real_img[:, 4:, ...]
-                    real_sk = real_img[:, 3:4, ...]
-                    real_img = real_img[:, :3, ...]
-                self.logger.debug(f"[sk] type: {type(real_sk)} shape: {real_sk.shape}")
-                self.logger.debug(f"[sk] mean: {real_sk.mean()} std: {real_sk.std()} min:{real_sk.min()} max:{real_sk.max()}")
+                real_img, _ = batch
+            real_img = real_img.to(self.device)
+            self.logger.debug(f"input shape: {real_img.shape}")
             
             requires_grad(self.generator, False)
             requires_grad(self.discriminator, True)
 
             noise = mixing_noise(self.batch_size, self.latent, self.mixing, self.device)
             fake_label = torch.randint(self.num_classes, (self.batch_size,)).to(self.device) \
-                         if self.num_classes > 0 else None
-            fake_img, _ = self.generator(noise, labels_in=fake_label, sk=real_sk, mk=real_mk)
+                         if self.num_classes > 1 else None
+            fake_img, _ = self.generator(noise, labels_in=fake_label)
             fake_pred = self.discriminator(fake_img)
             real_pred = self.discriminator(real_img)
 
@@ -351,8 +283,8 @@ class Trainer():
 
             noise = mixing_noise(self.batch_size, self.latent, self.mixing, self.device)
             fake_label = torch.randint(self.num_classes, (self.batch_size,)).to(self.device) \
-                         if self.num_classes > 0 else None
-            fake_img, _ = self.generator(noise, labels_in=fake_label, sk=real_sk, mk=real_mk)
+                         if self.num_classes > 1 else None
+            fake_img, _ = self.generator(noise, labels_in=fake_label)
             fake_pred = self.discriminator(fake_img)
             g_loss = nonsaturating_loss(fake_pred)
 
@@ -370,11 +302,9 @@ class Trainer():
                 noise = mixing_noise(
                     path_batch_size, self.latent, self.mixing, self.device
                 )
-                real_sk_reg = real_sk[:path_batch_size] if real_sk is not None else None
-                real_mk_reg = real_mk[:path_batch_size] if real_mk is not None else None
                 fake_label = torch.randint(self.num_classes, (path_batch_size,)).to(self.device) \
                              if self.num_classes > 0 else None
-                fake_img, latents = self.generator(noise, labels_in=fake_label, sk=real_sk_reg, mk=real_mk_reg, return_latents=True)
+                fake_img, latents = self.generator(noise, labels_in=fake_label, return_latents=True)
 
                 path_loss, mean_path_length, path_lengths = path_regularize(
                     fake_img, latents, mean_path_length
@@ -427,23 +357,15 @@ class Trainer():
                     sample_iter = 'init' if i==0 else str(i).zfill(digits_length)
                     with torch.no_grad():
                         self.g_ema.eval()
-                        sample, _ = self.g_ema([sample_z], labels_in=fixed_fake_label, sk=sample_sk, mk=sample_mk)
+                        sample, _ = self.g_ema([sample_z], labels_in=fixed_fake_label)
                         
-                        if cfg_d.DATASET == 'MultiChannelDataset' and not self.use_sk:
-                            s = 0
-                            samples = []
-                            for i, src in enumerate(cfg_d.SOURCE):
-                                e = s + cfg_d.CHANNELS[i]
-                                
-                                _sample = sample[:,s:e,:,:]
-                                if cfg_d.CHANNELS[i] == 1:
-                                    _sample = _sample.repeat((1,3,1,1))
-                                    
-                                samples.append(_sample)
-                                s = e
+                        if cfg_d.DATASET == 'MultiChannelDataset':
+                            sample_list = torch.split(sample, cfg_d.CHANNELS, dim=1)
+                            sample_list = [(x.repeat(1,3,1,1) if x.shape[1]==1 else x)
+                                           for x in sample_list]
                                 
                             utils.save_image(
-                                list(torch.cat(samples, dim=2).unbind(0)),
+                                list(torch.cat(sample_list, dim=2).unbind(0)),
                                 self.out_dir / f'samples/fake-{sample_iter}.png',
                                 nrow=int(self.n_sample ** 0.5) * 3,
                                 normalize=True,
@@ -505,9 +427,9 @@ if __name__ == '__main__':
     n_gpu = torch.cuda.device_count()
     if args.local_rank >= n_gpu:
         raise RuntimeError('Recommend one process per device')
-    args.distributed = n_gpu > 1
+    ddp = n_gpu > 1
     
-    if args.distributed:
+    if ddp:
         torch.cuda.set_device(args.local_rank)
         torch.distributed.init_process_group(backend='nccl', init_method='env://')
         synchronize()
@@ -518,8 +440,6 @@ if __name__ == '__main__':
         print("print function overriden")
     
     logger, args.out_dir = prepare_training(config, args.cfg, debug=args.debug)
-    
-    
     if not logger:
         # add process info to slave process
         log_format = '<SLAVE{}> %(levelname)-8s %(asctime)-15s %(message)s'.format(get_rank())
@@ -527,18 +447,21 @@ if __name__ == '__main__':
                             format=log_format)
         logger = logging.getLogger()
 
+    logger.debug(pformat(config))
     logger.info("Only keep logs of master in log file")
-    
     logger.info("initialize trainer...")
     t = time()
-    trainer = Trainer(args, config, logger)
+    trainer = Trainer(args, config, logger, ddp=ddp)
     logger.info(f"trainer initialized. (costs {time() - t})")
 
     if get_rank() == 0 and wandb is not None and args.wandb:
-        wandb.init(project='stylegan2-appendSK')
+        print(f"initialize wandb project: {Path(args.cfg).stem}")
+        wandb.init(project=f'stylegan2-{Path(args.cfg).stem}')
     
     logger.info("start training")
     trainer.train()
     
     if get_rank() == 0 and getattr(trainer, 'fid_tracker') is not None:
         trainer.fid_tracker.plot_fid()
+        (args.out_dir / 'finish.txt').touch()
+    

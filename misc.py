@@ -1,5 +1,6 @@
 import os
 import time
+import shutil
 import logging
 import argparse
 from pathlib import Path
@@ -83,8 +84,7 @@ def prepare_training(cfg, cfg_path, debug=False):
     final_out_dir.mkdir()
     
     # out of expectation
-    with open(final_out_dir / 'configuration.txt', 'w') as f:
-        pprint(cfg, f)
+    shutil.copyfile(cfg_path, final_out_dir / 'configuration.yml')
     
     (final_out_dir / 'checkpoints').mkdir()
     (final_out_dir / 'samples').mkdir()
