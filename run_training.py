@@ -78,14 +78,14 @@ def set_grad_none(model, targets):
             p.grad = None
 
 class Trainer():
-    def __init__(self, args, config, logger):
+    def __init__(self, args, config, logger, ddp=False):
         
         # dummy. mod. in the future
         self.device = 'cuda'
         self.config = config
         self.logger = logger
         self.local_rank = args.local_rank
-        self.distributed = args.distributed
+        self.distributed = ddp
         self.out_dir = args.out_dir
         self.use_wandb = args.wandb
         self.n_sample = config.N_SAMPLE
@@ -110,7 +110,7 @@ class Trainer():
         # datset
         print("get dataloader ...")
         t = time()
-        self.loader = get_dataloader(config, self.batch_size, distributed=args.distributed)
+        self.loader = get_dataloader(config, self.batch_size, distributed=ddp)
         print(f"get dataloader complete ({time() - t})")
         
         self.use_sk = False
@@ -189,10 +189,9 @@ class Trainer():
             )
         
         # init. FID tracker if needed.
-        if 'fid' in config.EVAL.METRICS.split(','):
-            if get_rank() == 0:
-                self.fid_tracker = FIDTracker(config, self.out_dir, use_tqdm=True)
-            synchronize()
+        if 'fid' in config.EVAL.METRICS.split(',') and get_rank() == 0:
+            self.fid_tracker = FIDTracker(config, self.out_dir, use_tqdm=True)
+        synchronize()
             
     def train(self):
         cfg_d = self.config.DATASET
@@ -468,9 +467,9 @@ if __name__ == '__main__':
     n_gpu = torch.cuda.device_count()
     if args.local_rank >= n_gpu:
         raise RuntimeError('Recommend one process per device')
-    args.distributed = n_gpu > 1
+    ddp = n_gpu > 1
     
-    if args.distributed:
+    if ddp:
         torch.cuda.set_device(args.local_rank)
         torch.distributed.init_process_group(backend='nccl', init_method='env://')
         synchronize()
@@ -492,11 +491,12 @@ if __name__ == '__main__':
     logger.info("Only keep logs of master in log file")
     logger.info("initialize trainer...")
     t = time()
-    trainer = Trainer(args, config, logger)
+    trainer = Trainer(args, config, logger, ddp=ddp)
     logger.info(f"trainer initialized. (costs {time() - t})")
 
     if get_rank() == 0 and wandb is not None and args.wandb:
-        wandb.init(project='stylegan2-DeepFashion_RandomCrop')
+        print(f"initialize wandb project: {Path(args.cfg).stem}")
+        wandb.init(project=f'stylegan2-{Path(args.cfg).stem}')
     
     logger.info("start training")
     trainer.train()
