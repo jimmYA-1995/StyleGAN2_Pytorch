@@ -123,7 +123,7 @@ class MultiChannelDataset(data.Dataset):
             for src in sources:
                 assert (root / src).is_dir(), f'source directory {src} is not in root path: {root}'
         
-            self.img_paths.extend(list((root / sources[0]).glob('**/*.jpg')))
+            self.img_paths.extend(list((root / sources[0]).glob('*.jpg')))
         
         
         self.length = len(self.img_paths)

@@ -113,23 +113,24 @@ class Trainer():
         self.loader = get_dataloader(config, self.batch_size, distributed=ddp)
         print(f"get dataloader complete ({time() - t})")
         
-        self.use_sk = False
-        self.use_mk = False
-        if config.MODEL.EXTRA_CHANNEL > 0:
-            if 'skeleton' in config.DATASET.SOURCE[1]:
-                self.use_sk = True
-            if 'mask' in config.DATASET.SOURCE[-1]:
-                self.use_mk = True
         # Define model
         assert self.num_classes >= 1
         label_size = 0 if self.num_classes == 1 else self.num_classes
-        self.generator = Generator(self.latent, label_size, self.resolution,
-                                   embedding_size=self.embed_size, extra_channels=config.MODEL.EXTRA_CHANNEL,
-                                   use_sk=self.use_sk, use_mk=self.use_mk, is_training=True).to(self.device)
-        self.discriminator = Discriminator(label_size, self.resolution, extra_channels=config.MODEL.EXTRA_CHANNEL).to(self.device)
-        self.g_ema = Generator(self.latent, label_size, self.resolution,
-                               embedding_size=self.embed_size, extra_channels=config.MODEL.EXTRA_CHANNEL,
-                               use_sk=self.use_sk, use_mk=self.use_mk, is_training=False).to(self.device)
+        self.generator = Generator(self.latent,
+                                   label_size,
+                                   self.resolution,
+                                   embedding_size=self.embed_size,
+                                   extra_channels=config.MODEL.EXTRA_CHANNEL,
+                                   is_training=True).to(self.device)
+        self.discriminator = Discriminator(label_size,
+                                           self.resolution,
+                                           extra_channels=config.MODEL.EXTRA_CHANNEL).to(self.device)
+        self.g_ema = Generator(self.latent,
+                               label_size,
+                               self.resolution,
+                               embedding_size=self.embed_size,
+                               extra_channels=config.MODEL.EXTRA_CHANNEL,
+                               is_training=False).to(self.device)
         self.g_ema.eval()
         accumulate(self.g_ema, self.generator, 0)
         
@@ -225,37 +226,17 @@ class Trainer():
             g_module = self.generator
             d_module = self.discriminator
 
-        accum = 0.5 ** (32 / (10 * 1000))
+        accum = 0.5 ** (32 / (10 * 1000)) ##
 
         sample_z = torch.randn(self.n_sample, self.latent, device=self.device)
         fixed_fake_label = torch.randint(self.num_classes, (sample_z.shape[0],)).to(self.device) \
                            if self.num_classes > 1 else None
         self.logger.debug(f"sample vector: {sample_z.shape}")
-        sample_sk, sample_mk = None, None
-        if self.use_sk:
-            import skimage.io as io
-            sample_sk = []
-                
-            trf = [
-                        transforms.ToTensor(),
-                        transforms.Normalize([0.5], [5],
-                                             inplace=True),
-                    ]
-            transform = transforms.Compose(trf)
-            
-            for i, p in enumerate((Path(config.DATASET.ROOTS[0]) / 'sample_sk').glob('*.jpg')):
-                if i == self.n_sample: 
-                    break
-                sample_sk.append(transform(io.imread(p)[..., None])[None, ...])
-            sample_sk = torch.cat(sample_sk, dim=0).to('cuda')
-            
-
-            self.logger.debug(f"sample sk: {sample_sk.shape}, {sample_sk.max()}, {sample_sk.min()}, {type(sample_sk)}")
         
         # start training
         for i in pbar:
             s = time()
-            real_img = labels = real_sk = real_mk = None
+            real_img = labels = None
             batch = next(loader)
             if self.num_classes > 1:
                 real_img, labels = batch
@@ -265,26 +246,13 @@ class Trainer():
             real_img = real_img.to(self.device)
             self.logger.debug(f"input shape: {real_img.shape}")
             
-            if not self.use_sk:
-                real_img = real_img[:, :3, ...]
-            else:
-                if real_img.shape[1] == 4:
-                    real_sk = real_img[:, 3:, ...]
-                    real_img = real_img[:, :3, ...]
-                elif real_img.shape[1] == 5:
-                    real_mk = real_img[:, 4:, ...]
-                    real_sk = real_img[:, 3:4, ...]
-                    real_img = real_img[:, :3, ...]
-                self.logger.debug(f"[sk] type: {type(real_sk)} shape: {real_sk.shape}")
-                self.logger.debug(f"[sk] mean: {real_sk.mean()} std: {real_sk.std()} min:{real_sk.min()} max:{real_sk.max()}")
-            
             requires_grad(self.generator, False)
             requires_grad(self.discriminator, True)
 
             noise = mixing_noise(self.batch_size, self.latent, self.mixing, self.device)
             fake_label = torch.randint(self.num_classes, (self.batch_size,)).to(self.device) \
                          if self.num_classes > 1 else None
-            fake_img, _ = self.generator(noise, labels_in=fake_label, sk=real_sk, mk=real_mk)
+            fake_img, _ = self.generator(noise, labels_in=fake_label)
             fake_pred = self.discriminator(fake_img)
             real_pred = self.discriminator(real_img)
 
@@ -316,7 +284,7 @@ class Trainer():
             noise = mixing_noise(self.batch_size, self.latent, self.mixing, self.device)
             fake_label = torch.randint(self.num_classes, (self.batch_size,)).to(self.device) \
                          if self.num_classes > 1 else None
-            fake_img, _ = self.generator(noise, labels_in=fake_label, sk=real_sk, mk=real_mk)
+            fake_img, _ = self.generator(noise, labels_in=fake_label)
             fake_pred = self.discriminator(fake_img)
             g_loss = nonsaturating_loss(fake_pred)
 
@@ -334,11 +302,9 @@ class Trainer():
                 noise = mixing_noise(
                     path_batch_size, self.latent, self.mixing, self.device
                 )
-                real_sk_reg = real_sk[:path_batch_size] if real_sk is not None else None
-                real_mk_reg = real_mk[:path_batch_size] if real_mk is not None else None
                 fake_label = torch.randint(self.num_classes, (path_batch_size,)).to(self.device) \
                              if self.num_classes > 0 else None
-                fake_img, latents = self.generator(noise, labels_in=fake_label, sk=real_sk_reg, mk=real_mk_reg, return_latents=True)
+                fake_img, latents = self.generator(noise, labels_in=fake_label, return_latents=True)
 
                 path_loss, mean_path_length, path_lengths = path_regularize(
                     fake_img, latents, mean_path_length
@@ -391,23 +357,15 @@ class Trainer():
                     sample_iter = 'init' if i==0 else str(i).zfill(digits_length)
                     with torch.no_grad():
                         self.g_ema.eval()
-                        sample, _ = self.g_ema([sample_z], labels_in=fixed_fake_label, sk=sample_sk, mk=sample_mk)
+                        sample, _ = self.g_ema([sample_z], labels_in=fixed_fake_label)
                         
-                        if cfg_d.DATASET == 'MultiChannelDataset' and not self.use_sk:
-                            s = 0
-                            samples = []
-                            for i, src in enumerate(cfg_d.SOURCE):
-                                e = s + cfg_d.CHANNELS[i]
-                                
-                                _sample = sample[:,s:e,:,:]
-                                if cfg_d.CHANNELS[i] == 1:
-                                    _sample = _sample.repeat((1,3,1,1))
-                                    
-                                samples.append(_sample)
-                                s = e
+                        if cfg_d.DATASET == 'MultiChannelDataset':
+                            sample_list = torch.split(sample, cfg_d.CHANNELS, dim=1)
+                            sample_list = [(x.repeat(1,3,1,1) if x.shape[1]==1 else x)
+                                           for x in sample_list]
                                 
                             utils.save_image(
-                                list(torch.cat(samples, dim=2).unbind(0)),
+                                list(torch.cat(sample_list, dim=2).unbind(0)),
                                 self.out_dir / f'samples/fake-{sample_iter}.png',
                                 nrow=int(self.n_sample ** 0.5) * 3,
                                 normalize=True,

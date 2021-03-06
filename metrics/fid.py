@@ -13,7 +13,7 @@ from torchvision import transforms
 from scipy import linalg
 from tqdm import tqdm
 
-from dataset import get_dataloader_for_each_class
+from dataset import get_dataloader_for_each_class, get_dataloader
 from calc_inception import load_patched_inception_v3
 
 def sample_data(loader):
@@ -140,8 +140,12 @@ class FIDTracker():
 
     @torch.no_grad()
     def extract_feature_from_real_images(self, config):
-        dataloaders, idx_to_class = get_dataloader_for_each_class(config, self.config.BATCH_SIZE)
-        assert self.num_classes == len(idx_to_class), "N_CLASSES in user config not equal to #class in dataset"
+        if self.num_classes > 1:
+            dataloaders, idx_to_class = get_dataloader_for_each_class(config, self.config.BATCH_SIZE)
+            assert self.num_classes == len(idx_to_class), "N_CLASSES in user config not equal to #class in dataset"
+        else:
+            dataloaders = [get_dataloader(config, self.config.BATCH_SIZE)]
+            idx_to_class = [None]
         start = time.time()
         
         real_mean_list = []
@@ -199,7 +203,7 @@ class FIDTracker():
                 if self.cond_samples is not None:
                     cond_samples = self.cond_samples[:batch]
 
-                img, _ = generator([latent], labels_in=fake_label, sk=cond_samples)
+                img, _ = generator([latent], labels_in=fake_label) #, sk=cond_samples)
                 feature = self.inceptionV3(img[:, :3, :, :])[0].view(img.shape[0], -1)
                 features.append(feature.to('cpu'))
 

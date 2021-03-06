@@ -444,7 +444,6 @@ class G_synthesis_stylegan2(nn.Module):
         architecture        = 'skip',       # Architecture: 'orig', 'skip', 'resnet'.
         nonlinearity        = 'lrelu',      # Activation function: 'relu', 'lrelu', etc.
         resample_kernel     = [1,3,3,1],    # Low-pass filter to apply when resampling activations. None = no filtering.
-        use_sk=False, use_mk=False,
         **_kwargs):                         # Ignore unrecognized keyword args.)
         
         
@@ -472,21 +471,19 @@ class G_synthesis_stylegan2(nn.Module):
         
         # main layers
         self.convs = nn.ModuleList()
-        sk_ch = 1 if use_sk else 0
-        mk_ch = 1 if use_mk else 0
         
         in_channel = nf(1)
         for res in range(3, self.resolution_log2 + 1):
             fmaps = nf(res-1)
             self.convs.extend([
-                Layer(in_channel + sk_ch + mk_ch, fmaps, use_modulate=True, dlatents_dim=dlatent_size, kernel=kernel, mode='up', resample_kernel=resample_kernel),
+                Layer(in_channel, fmaps, use_modulate=True, dlatents_dim=dlatent_size, kernel=kernel, mode='up', resample_kernel=resample_kernel),
                 Layer(fmaps, fmaps, use_modulate=True, dlatents_dim=dlatent_size, kernel=kernel, resample_kernel=resample_kernel)
             ])
             if self.architecture == 'skip':
                 self.trgbs.append(ToRGB(fmaps, num_channels, dlatent_size))
             in_channel = fmaps
 
-    def forward(self, dlatents_in, sk=None, mk=None):
+    def forward(self, dlatents_in):
         noises = [getattr(self, f'noise_{i}', None) for i in range(self.num_layers)]
         tile_in = self.input.repeat(dlatents_in.shape[0], 1, 1, 1)
         
@@ -496,19 +493,9 @@ class G_synthesis_stylegan2(nn.Module):
         
         # main layer
         for res in range(3, self.resolution_log2 + 1):
-            if sk is not None or mk is not None:
-                x_list = [x]
-                size = x.shape[-1] # W=H
-                if sk is not None:
-                    x_list.append(F.interpolate(sk, size))
-                if mk is not None:
-                    x_list.append(F.interpolate(mk, size))
-
-                x = torch.cat(x_list, dim=1)
-            
             x = self.convs[res*2 - 6](x, dlatents_in[:, res*2-5], noises[res*2-5])
             x = self.convs[res*2 - 5](x, dlatents_in[:, res*2-4], noises[res*2-4])
-            # Does the style of ToRGB is shared with the next conv layer?
+            
             if self.architecture == 'skip' or res == self.resolution_log2:
                 skip = self.trgbs[res-2](x, dlatents_in[:, res*2-3], skip=skip)
         images_out = skip
