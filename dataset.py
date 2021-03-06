@@ -156,7 +156,7 @@ class MultiChannelDataset(data.Dataset):
             path = self.img_paths[index % (self.length // 2)]
             flip = index >= (self.length // 2)
             concat_img = self.loader(path, flip=flip)
-            target = None
+            target = 0
             
             if self.transform is not None:
                 concat_img = self.transform(concat_img)

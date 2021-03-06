@@ -271,7 +271,7 @@ class Trainer():
 
         sample_z = torch.randn(self.n_sample, self.latent, device=self.device)
         fixed_fake_label = torch.randint(self.num_classes, (sample_z.shape[0],)).to(self.device) \
-                           if self.num_classes > 0 else None
+                           if self.num_classes > 1 else None
         self.logger.debug(f"sample vector: {sample_z.shape}")
         sample_sk, sample_mk = None, None
         if self.use_sk:
@@ -297,13 +297,16 @@ class Trainer():
         # start training
         for i in pbar:
             s = time()
-            real_img, labels = next(loader)
-            real_img = real_img.to(self.device)
-            if labels is not None:
+            real_img = labels = real_sk = real_mk = None
+            batch = next(loader)
+            if self.num_classes > 1:
+                real_img, labels = batch
                 labels = labels.to(self.device)
-
+            else:
+                real_img, _ = batch
+            real_img = real_img.to(self.device)
             self.logger.debug(f"input shape: {real_img.shape}")
-            real_sk = real_mk = None
+            
             if not self.use_sk:
                 real_img = real_img[:, :3, ...]
             else:
@@ -322,7 +325,7 @@ class Trainer():
 
             noise = mixing_noise(self.batch_size, self.latent, self.mixing, self.device)
             fake_label = torch.randint(self.num_classes, (self.batch_size,)).to(self.device) \
-                         if self.num_classes > 0 else None
+                         if self.num_classes > 1 else None
             fake_img, _ = self.generator(noise, labels_in=fake_label, sk=real_sk, mk=real_mk)
             fake_pred = self.discriminator(fake_img)
             real_pred = self.discriminator(real_img)
@@ -354,7 +357,7 @@ class Trainer():
 
             noise = mixing_noise(self.batch_size, self.latent, self.mixing, self.device)
             fake_label = torch.randint(self.num_classes, (self.batch_size,)).to(self.device) \
-                         if self.num_classes > 0 else None
+                         if self.num_classes > 1 else None
             fake_img, _ = self.generator(noise, labels_in=fake_label, sk=real_sk, mk=real_mk)
             fake_pred = self.discriminator(fake_img)
             g_loss = nonsaturating_loss(fake_pred)
