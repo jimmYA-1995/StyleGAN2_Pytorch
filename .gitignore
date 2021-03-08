@@ -5,6 +5,7 @@ data/
 results/
 experiments/
 !experiments/default.yml
+!experiments/DeepFashion2.yml
 checkpoints/
 wandb/
 *.out
