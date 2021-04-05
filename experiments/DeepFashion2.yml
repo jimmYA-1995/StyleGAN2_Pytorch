@@ -1,0 +1,88 @@
+# default configuration is in config/defaults.py
+DESCRIPTION: >
+    nothing
+OUT_DIR: 'results'
+N_SAMPLE: 16
+# Use CUDA_VISIBLE_DEVICES to control #gpus
+RESOLUTION: 256
+N_CLASSES: 1
+
+DATASET:
+  WORKERS: 8
+  DATASET: MultiChannelDataset
+  ROOTS:
+    - '/home/u3534611/data/DeepFashion2'
+  SOURCE:
+    - 'images_256x256_nobg'
+    - 'seg_images/part0'
+    - 'seg_images/part1'
+    - 'seg_images/part2'
+    - 'seg_images/part3'
+    - 'seg_images/part4'
+    - 'seg_images/part5'
+    - 'seg_images/part6'
+  CHANNELS:
+    - 3
+    - 1
+    - 1
+    - 1
+    - 1
+    - 1
+    - 1
+    - 1
+  MEAN:
+    - 0.5
+    - 0.5
+    - 0.5
+    - 0.5
+    - 0.5
+    - 0.5
+    - 0.5
+    - 0.5
+    - 0.5
+    - 0.5
+  STD:
+    - 0.5
+    - 0.5
+    - 0.5
+    - 0.5
+    - 0.5
+    - 0.5
+    - 0.5
+    - 0.5
+    - 0.5
+    - 0.5
+  LOAD_IN_MEM: false
+  FLIP: true
+
+MODEL:
+  N_MLP: 8
+  LATENT_SIZE: 512
+  CHANNEL_MULTIPLIER: 2
+  EMBEDDING_SIZE: 0
+  EXTRA_CHANNEL: 7
+
+TRAIN:
+  ITERATION: 400000
+  BATCH_SIZE_PER_GPU: 4
+  LR: 0.0008
+  R1: 10
+  PATH_REGULARIZE: 2
+  PATH_BATCH_SHRINK: 2
+  G_REG_EVERY: 4
+  D_REG_EVERY: 16
+  STYLE_MIXING_PROB: 0.9
+  NV_WEIGHTS_PATH: ''
+  CKPT: 'results/00006-15gpu-DeepFashion2/checkpoints/ckpt-312500.pt'
+  SAVE_CKPT_EVERY: 2500
+  CKPT_MAX_KEEP: 10
+  SAMPLE_EVERY: 1000
+EVAL:
+  METRICS: 'fid'
+  FID:
+    EVERY: 2500
+    BATCH_SIZE: 64
+    N_SAMPLE: 50000
+    INCEPTION_CACHE: 'inception_cache.pkl'
+    SAMPLE_DIR: ''
+

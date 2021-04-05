@@ -85,7 +85,7 @@ def load_images_and_concat(path, resolution, sources, channel_info=None, flip=Fa
             if img.ndim == 2:
                 img = img[..., None]
             if channel_info:
-                assert img.shape[-1] == channel_info[i]
+                assert img.shape[-1] == channel_info[i], f"{path}: image channel: {img.shape[-1]}, channel info: {channel_info[i]}"
             imgs.append(img)
     except:
         raise RuntimeError(f'fail to load the image: {path}')

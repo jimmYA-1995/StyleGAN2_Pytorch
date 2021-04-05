@@ -162,6 +162,12 @@ class Trainer():
                 logger.info('**** load ckpt failed. start from scratch ****')
                 pass
             
+            # update lr to setting in configuration
+            for param_groups in ckpt['g_optim']['param_groups']:
+                param_groups['lr'] = config.TRAIN.LR * g_reg_ratio
+            for param_groups in ckpt['d_optim']['param_groups']:
+                param_groups['lr'] = config.TRAIN.LR * d_reg_ratio
+                
             try:
                 self.generator.load_state_dict(ckpt['g'])
                 self.discriminator.load_state_dict(ckpt['d'])
@@ -173,6 +179,8 @@ class Trainer():
                 logger.warn(" *** using hacky way to load partial weight to model *** ")
                 self.start_iter = load_partial_weights(
                     self.generator, self.discriminator, self.g_ema, ckpt, logger=logger)
+                
+
 
         if self.distributed:
             self.generator = nn.parallel.DistributedDataParallel(
@@ -357,17 +365,18 @@ class Trainer():
                     sample_iter = 'init' if i==0 else str(i).zfill(digits_length)
                     with torch.no_grad():
                         self.g_ema.eval()
-                        sample, _ = self.g_ema([sample_z], labels_in=fixed_fake_label)
+                        samples, _ = self.g_ema([sample_z], labels_in=fixed_fake_label)
                         
                         if cfg_d.DATASET == 'MultiChannelDataset':
-                            sample_list = torch.split(sample, cfg_d.CHANNELS, dim=1)
-                            sample_list = [(x.repeat(1,3,1,1) if x.shape[1]==1 else x)
-                                           for x in sample_list]
+                            sample_list = [torch.split(s, cfg_d.CHANNELS, dim=0) for s in samples]
+                            sample_list = [[(x.repeat(3,1,1) if x.shape[0]==1 else x) for x in s]
+                                           for s in sample_list]
+                            sample_list = [torch.cat(sample, dim=2) for sample in sample_list]
                                 
                             utils.save_image(
-                                list(torch.cat(sample_list, dim=2).unbind(0)),
+                                sample_list,
                                 self.out_dir / f'samples/fake-{sample_iter}.png',
-                                nrow=int(self.n_sample ** 0.5) * 3,
+                                nrow=1,
                                 normalize=True,
                                 range=(-1, 1),
                             )
