@@ -11,11 +11,7 @@ from op import upfirdn2d, FusedLeakyReLU, fused_leaky_relu
 
 logger = logging.getLogger()
 activation_funcs = {
-    'linear':   lambda x, **_:        x,                          
-    'relu':     lambda x, **_:        tf.nn.relu(x),              
-    'lrelu':    lambda x, alpha, **_: tf.nn.leaky_relu(x, alpha), 
-    'tanh':     lambda x, **_:        tf.nn.tanh(x),              
-    'sigmoid':  lambda x, **_:        tf.nn.sigmoid(x),
+    'linear':   lambda x, **_:        x,
     'fused_lrelu': lambda x, b, **_: fused_leaky_relu(x, b)
 }
 
