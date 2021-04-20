@@ -17,7 +17,7 @@ from tqdm import tqdm
 
 try:
     import wandb
-except ImportError:
+except ImportError: 
     wandb = None
 
 from dataset import get_dataset, get_dataloader
@@ -111,6 +111,7 @@ class Trainer():
         print("get dataloader ...")
         t = time()
         self.loader = get_dataloader(config, self.batch_size, distributed=ddp)
+        self.val_loader = get_dataloader(config, self.n_sample, split='val', distributed=ddp)
         print(f"get dataloader complete ({time() - t})")
         
         # Define model
@@ -229,6 +230,9 @@ class Trainer():
         accum = 0.5 ** (32 / (10 * 1000)) ##
 
         sample_z = torch.randn(self.n_sample, self.latent, device=self.device)
+        val_loader = sample_data(self.val_loader)
+        sample_body_imgs, sample_face_imgs = next(val_loader)
+        sample_body_imgs, sample_face_imgs = sample_body_imgs.to(self.device), sample_face_imgs.to(self.device)
         fixed_fake_label = torch.randint(self.num_classes, (sample_z.shape[0],)).to(self.device) \
                            if self.num_classes > 1 else None
         self.logger.debug(f"sample vector: {sample_z.shape}")
@@ -236,15 +240,12 @@ class Trainer():
         # start training
         for i in pbar:
             s = time()
-            real_img = labels = None
-            batch = next(loader)
-            if self.num_classes > 1:
-                real_img, labels = batch
-                labels = labels.to(self.device)
-            else:
-                real_img, _ = batch
-            real_img = real_img.to(self.device)
-            self.logger.debug(f"input shape: {real_img.shape}")
+            body_img = labels = None
+            body_img, face_img = next(loader)
+
+            face_img = face_img.to(self.device)
+            body_img = body_img.to(self.device)
+            self.logger.debug(f"input shape: {body_img.shape}")
             
             requires_grad(self.generator, False)
             requires_grad(self.discriminator, True)
@@ -252,9 +253,9 @@ class Trainer():
             noise = mixing_noise(self.batch_size, self.latent, self.mixing, self.device)
             fake_label = torch.randint(self.num_classes, (self.batch_size,)).to(self.device) \
                          if self.num_classes > 1 else None
-            fake_img, _ = self.generator(noise, labels_in=fake_label)
+            fake_img, _ = self.generator(noise, labels_in=fake_label, faces_in=face_img)
             fake_pred = self.discriminator(fake_img)
-            real_pred = self.discriminator(real_img)
+            real_pred = self.discriminator(body_img)
 
             d_loss = logistic_loss(real_pred, fake_pred)
 
@@ -268,9 +269,9 @@ class Trainer():
 
             d_regularize = i % self.d_reg_every == 0
             if d_regularize:
-                real_img.requires_grad = True
-                real_pred = self.discriminator(real_img)
-                r1_loss = d_r1_loss(real_pred, real_img)
+                body_img.requires_grad = True
+                real_pred = self.discriminator(body_img)
+                r1_loss = d_r1_loss(real_pred, body_img)
 
                 self.discriminator.zero_grad()
                 (self.r1 / 2 * r1_loss * self.d_reg_every + 0 * real_pred[0]).backward()
@@ -284,7 +285,7 @@ class Trainer():
             noise = mixing_noise(self.batch_size, self.latent, self.mixing, self.device)
             fake_label = torch.randint(self.num_classes, (self.batch_size,)).to(self.device) \
                          if self.num_classes > 1 else None
-            fake_img, _ = self.generator(noise, labels_in=fake_label)
+            fake_img, _ = self.generator(noise, labels_in=fake_label, faces_in=face_img)
             fake_pred = self.discriminator(fake_img)
             g_loss = nonsaturating_loss(fake_pred)
 
@@ -304,7 +305,7 @@ class Trainer():
                 )
                 fake_label = torch.randint(self.num_classes, (path_batch_size,)).to(self.device) \
                              if self.num_classes > 0 else None
-                fake_img, latents = self.generator(noise, labels_in=fake_label, return_latents=True)
+                fake_img, latents = self.generator(noise, labels_in=fake_label, faces_in=face_img[:path_batch_size], return_latents=True)
 
                 path_loss, mean_path_length, path_lengths = path_regularize(
                     fake_img, latents, mean_path_length
@@ -357,7 +358,7 @@ class Trainer():
                     sample_iter = 'init' if i==0 else str(i).zfill(digits_length)
                     with torch.no_grad():
                         self.g_ema.eval()
-                        sample, _ = self.g_ema([sample_z], labels_in=fixed_fake_label)
+                        sample, _ = self.g_ema([sample_z], labels_in=fixed_fake_label, faces_in=sample_face_imgs)
                         
                         if cfg_d.DATASET == 'MultiChannelDataset':
                             sample_list = torch.split(sample, cfg_d.CHANNELS, dim=1)
@@ -373,10 +374,14 @@ class Trainer():
                             )
 
                         else:
+                            # sample_body_imgs, sample_face_imgs, sample
+                            b, c, h, w = sample.shape
+                            stack_samples = torch.stack([sample_face_imgs, sample_body_imgs, sample], dim=0)
+                            samples = torch.transpose(stack_samples, 0, 1).reshape(3 * b, c, h, w)
                             utils.save_image(
-                                sample,
+                                samples,
                                 self.out_dir / f'samples/fake-{sample_iter}.png',
-                                nrow=int(self.n_sample ** 0.5),
+                                nrow=int(self.n_sample ** 0.5) * 3,
                                 normalize=True,
                                 range=(-1, 1),
                             )

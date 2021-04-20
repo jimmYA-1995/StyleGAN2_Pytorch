@@ -175,7 +175,35 @@ class MultiChannelDataset(data.Dataset):
         tmp = '    Target Transforms (if any): '
         fmt_str += '{0}{1}'.format(tmp, self.target_transform.__repr__().replace('\n', '\n' + ' ' * len(tmp)))
         return fmt_str
-    
+
+
+class GenericDataset(data.Dataset):
+    def __init__(self, config, resolution, transform=None, split='train', **kwargs):
+        self.paths = list((Path(config.ROOTS[0]) / split).glob('*.jpg'))
+        self.transform = transform
+        self.load_size = resolution + 30
+        self.resolution = resolution
+
+    def __len__(self):
+        return len(self.paths)
+
+    def __getitem__(self, idx):
+        img = Image.open(self.paths[idx])
+        img = img.resize((self.load_size * 2, self.load_size), Image.BILINEAR)
+        arr = np.array(img) # /255*2-1
+        w1 = (self.load_size - self.resolution) // 2
+        w2 = (self.load_size + self.resolution) // 2
+        h1, h2 = w1, w2
+        imgA = arr[h1:h2, w1:w2, :]
+        imgB = arr[h1:h2, self.load_size + w1:self.load_size + w2, :]
+            
+        if self.transform is not None:
+            imgA = self.transform(imgA)
+            imgB = self.transform(imgB)
+
+        return imgB, imgA
+
+
 def data_sampler(dataset, shuffle, distributed):
     if distributed:
         return data.distributed.DistributedSampler(dataset, shuffle=shuffle)
@@ -185,7 +213,7 @@ def data_sampler(dataset, shuffle, distributed):
     else:
         return data.SequentialSampler(dataset)
 
-def get_dataset(config, resolution):
+def get_dataset(config, resolution, split='train'):
     # config.DATASET
     trf = [
         transforms.ToTensor(),
@@ -193,16 +221,18 @@ def get_dataset(config, resolution):
     ]
     transform = transforms.Compose(trf)
     Dataset = globals().get(config.DATASET)
-    dataset = Dataset(config, resolution, transform=transform)
-    return dataset   
+    dataset = Dataset(config, resolution, transform=transform, split=split)
+    return dataset
     
-def get_dataloader(config, batch_size, distributed=False):
-    dataset = get_dataset(config.DATASET, config.RESOLUTION)
+def get_dataloader(config, batch_size, n_workers=None, split='train', distributed=False):
+    dataset = get_dataset(config.DATASET, config.RESOLUTION, split=split)
+    if n_workers is None:
+        n_workers = config.DATASET.WORKERS
     
     loader = data.DataLoader(
         dataset,
         batch_size=batch_size,
-        num_workers=config.DATASET.WORKERS,
+        num_workers=n_workers,
         sampler=data_sampler(dataset, shuffle=True, distributed=distributed),
         drop_last=True,
     )

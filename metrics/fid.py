@@ -95,6 +95,8 @@ class FIDTracker():
             with open(self.output_path / 'inception_cache.pkl', 'wb') as f:
                 pickle.dump(dict(mean=self.real_mean, cov=self.real_cov, idx_to_class=self.idx_to_class), f)
 
+        self.val_loader = get_dataloader(config, self.model_bs, n_workers=1, split='val')
+
     def calc_fid(self, generator, k_iter, save=False, eps=1e-6):
         self.logger.info(f'get fid on {k_iter * 1000} iterations')
         start = time.time()
@@ -184,6 +186,7 @@ class FIDTracker():
         n_batch = self.config.N_SAMPLE // self.model_bs
         resid = self.config.N_SAMPLE % self.model_bs
         features_list = []
+        loader = sample_data(self.val_loader)
         
         for class_idx in range(self.num_classes):
             features = []
@@ -196,6 +199,8 @@ class FIDTracker():
                 if batch == 0:
                     continue
 
+                _, face_imgs = next(loader)
+                face_imgs = face_imgs[:batch].to(self.device)
                 latent = torch.randn(batch, 512, device=self.device)
                 fake_label = torch.LongTensor([class_idx]*batch).to(self.device)
                 
@@ -203,7 +208,7 @@ class FIDTracker():
                 if self.cond_samples is not None:
                     cond_samples = self.cond_samples[:batch]
 
-                img, _ = generator([latent], labels_in=fake_label) #, sk=cond_samples)
+                img, _ = generator([latent], labels_in=fake_label, faces_in=face_imgs)
                 feature = self.inceptionV3(img[:, :3, :, :])[0].view(img.shape[0], -1)
                 features.append(feature.to('cpu'))
 
