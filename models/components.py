@@ -473,8 +473,8 @@ class G_synthesis_stylegan2(nn.Module):
                 self.register_buffer(f'noise_{layer_idx}', torch.randn(*shape))
             
         # 4x4
-        self.input = Parameter(torch.randn((1, nf(1), 4, 4)))
-        self.face_encoder = face_encoder(resolution_log2, 2, 3, nf(1))
+        self.input = Parameter(torch.randn((1, nf(1) // 2, 4, 4)))
+        self.face_encoder = face_encoder(resolution_log2, 2, 3, nf(1) // 2)
         self.bottom_layer = Layer(nf(1), nf(1), use_modulate=True, dlatents_dim=dlatent_size, kernel=kernel, resample_kernel=resample_kernel)
         self.trgbs.append(ToRGB(nf(1), num_channels, dlatent_size))
         
@@ -496,7 +496,7 @@ class G_synthesis_stylegan2(nn.Module):
         noises = [getattr(self, f'noise_{i}', None) for i in range(self.num_layers)]
         tile_in = self.input.repeat(dlatents_in.shape[0], 1, 1, 1)
         face_encoding = self.face_encoder(faces_in)
-        content_input = face_encoding + tile_in
+        content_input = torch.cat([face_encoding, tile_in], dim=1)
 
         x = self.bottom_layer(content_input, dlatents_in[:, 0], noise=noises[0])
         if self.architecture == 'skip':
