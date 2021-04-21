@@ -331,7 +331,7 @@ class Trainer():
             accumulate(self.g_ema, g_module, accum)
             
             if get_rank() == 0 and self.fid_tracker is not None and \
-                (i == 0 or (i+1) % self.config.EVAL.FID.EVERY == 0):
+                i != 0 and (i+1) % self.config.EVAL.FID.EVERY == 0:
                 k_iter = (i+1) / 1000
                 self.g_ema.eval()
                 self.fid_tracker.calc_fid(self.g_ema, k_iter, save=True)

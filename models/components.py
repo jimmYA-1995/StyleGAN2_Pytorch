@@ -350,6 +350,7 @@ def face_encoder(res_log2, res_out_log2, nf_in, max_nf):
              nn.BatchNorm2d(nf_out),
              nn.LeakyReLU(0.2, inplace=True)])
         nf_in = nf_out
+    
     return nn.Sequential(*encoding_list)
         
 class ToRGB(nn.Module):
@@ -472,6 +473,7 @@ class G_synthesis_stylegan2(nn.Module):
                 self.register_buffer(f'noise_{layer_idx}', torch.randn(*shape))
             
         # 4x4
+        self.input = Parameter(torch.randn((1, nf(1), 4, 4)))
         self.face_encoder = face_encoder(resolution_log2, 2, 3, nf(1))
         self.bottom_layer = Layer(nf(1), nf(1), use_modulate=True, dlatents_dim=dlatent_size, kernel=kernel, resample_kernel=resample_kernel)
         self.trgbs.append(ToRGB(nf(1), num_channels, dlatent_size))
@@ -492,8 +494,11 @@ class G_synthesis_stylegan2(nn.Module):
 
     def forward(self, dlatents_in, faces_in):
         noises = [getattr(self, f'noise_{i}', None) for i in range(self.num_layers)]
+        tile_in = self.input.repeat(dlatents_in.shape[0], 1, 1, 1)
         face_encoding = self.face_encoder(faces_in)
-        x = self.bottom_layer(face_encoding, dlatents_in[:, 0], noise=noises[0])
+        content_input = face_encoding + tile_in
+
+        x = self.bottom_layer(content_input, dlatents_in[:, 0], noise=noises[0])
         if self.architecture == 'skip':
             skip = self.trgbs[0](x, dlatents_in[:, 1])
         
