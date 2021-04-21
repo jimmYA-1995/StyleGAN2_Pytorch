@@ -26,7 +26,7 @@ from load_weights import load_weights_from_nv, load_partial_weights
 from models import Generator, Discriminator
 from losses import nonsaturating_loss, path_regularize, logistic_loss, d_r1_loss
 from metrics import FIDTracker
-from config import config, update_config
+from config import config, update_config, convert_to_dict
 from distributed import (
     master_only,
     get_rank,
@@ -459,7 +459,9 @@ if __name__ == '__main__':
 
     if get_rank() == 0 and wandb is not None and args.wandb:
         print(f"initialize wandb project: {Path(args.cfg).stem}")
-        wandb.init(project=f'stylegan2-{Path(args.cfg).stem}')
+        wandb.init(project=f'stylegan2-{Path(args.cfg).stem}',
+                   config=convert_to_dict(config)
+        )
     
     logger.info("start training")
     trainer.train()
