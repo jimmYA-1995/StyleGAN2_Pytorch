@@ -121,6 +121,7 @@ class Trainer():
                                    label_size,
                                    self.resolution,
                                    embedding_size=self.embed_size,
+                                   dlatents_size=256,
                                    extra_channels=config.MODEL.EXTRA_CHANNEL,
                                    is_training=True).to(self.device)
         self.discriminator = Discriminator(label_size,
@@ -130,6 +131,7 @@ class Trainer():
                                label_size,
                                self.resolution,
                                embedding_size=self.embed_size,
+                               dlatents_size=256,
                                extra_channels=config.MODEL.EXTRA_CHANNEL,
                                is_training=False).to(self.device)
         self.g_ema.eval()
