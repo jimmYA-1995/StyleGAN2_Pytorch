@@ -135,7 +135,7 @@ class Trainer():
         self.g_ema.eval()
         accumulate(self.g_ema, self.generator, 0)
         
-        g_reg_ratio = self.g_reg_every / (self.g_reg_every + 1)
+        g_reg_ratio = 1
         d_reg_ratio = self.d_reg_every / (self.d_reg_every + 1)
 
         self.g_optim = optim.Adam(
@@ -297,7 +297,7 @@ class Trainer():
 
             g_regularize = i % self.g_reg_every == 0
 
-            if g_regularize:
+            if False and g_regularize:
                 self.logger.debug("Apply regularization to G")
                 path_batch_size = max(1, self.batch_size // self.path_batch_shrink)
                 noise = mixing_noise(
@@ -460,7 +460,8 @@ if __name__ == '__main__':
     if get_rank() == 0 and wandb is not None and args.wandb:
         print(f"initialize wandb project: {Path(args.cfg).stem}")
         wandb.init(project=f'stylegan2-{Path(args.cfg).stem}',
-                   config=convert_to_dict(config)
+                   config=convert_to_dict(config),
+                   tags=["no-style"],
         )
     
     logger.info("start training")

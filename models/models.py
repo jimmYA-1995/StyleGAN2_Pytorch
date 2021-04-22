@@ -27,6 +27,7 @@ class Generator(nn.Module):
         
         if label_size > 0:
             assert embedding_size > 0 
+        self.latent_size = latent_size
         # assert is_training is not None
         # if is_training:
         #     truncation_psi = truncation_cut_off = None
@@ -61,16 +62,16 @@ class Generator(nn.Module):
 
     def forward(self, latents_in, labels_in=None, faces_in=None, return_latents=None):
         # style mixing
-        if len(latents_in) == 2:
-            idx = random.randint(1, self.num_layers - 1)
-            inject_index = [idx, self.num_layers - idx] ## name confusing
-            dlatents = [self.mapping_network(l, labels_in, dlatent_broadcast=i)
-                        for l, i in zip(latents_in, inject_index)]
-            dlatents = torch.cat(dlatents, dim=1)
-        else:
-            dlatents = self.mapping_network(latents_in[0], labels_in,
-                                            dlatent_broadcast=self.num_layers)
-            
+#         if len(latents_in) == 2:
+#             idx = random.randint(1, self.num_layers - 1)
+#             inject_index = [idx, self.num_layers - idx] ## name confusing
+#             dlatents = [self.mapping_network(l, labels_in, dlatent_broadcast=i)
+#                         for l, i in zip(latents_in, inject_index)]
+#             dlatents = torch.cat(dlatents, dim=1)
+#         else:
+#             dlatents = self.mapping_network(latents_in[0], labels_in,
+#                                             dlatent_broadcast=self.num_layers)
+        dlatents = torch.ones(faces_in.shape[0], self.num_layers, self.latent_size, device=next(self.parameters()).device)
         images_out = self.synthesis_network(dlatents, faces_in)
         if return_latents:
             return images_out, dlatents

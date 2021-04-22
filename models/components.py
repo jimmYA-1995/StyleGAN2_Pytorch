@@ -452,7 +452,7 @@ class G_synthesis_stylegan2(nn.Module):
         architecture        = 'skip',       # Architecture: 'orig', 'skip', 'resnet'.
         nonlinearity        = 'lrelu',      # Activation function: 'relu', 'lrelu', etc.
         resample_kernel     = [1,3,3,1],    # Low-pass filter to apply when resampling activations. None = no filtering.
-        **_kwargs):                         # Ignore unrecognized keyword args.)
+        **_kwargs):                         # Ignore unrecognized keyword args.
         
         
         super(G_synthesis_stylegan2, self).__init__()
@@ -473,8 +473,8 @@ class G_synthesis_stylegan2(nn.Module):
                 self.register_buffer(f'noise_{layer_idx}', torch.randn(*shape))
             
         # 4x4
-        self.input = Parameter(torch.randn((1, nf(1), 4, 4)))
-        # self.face_encoder = face_encoder(resolution_log2, 2, 3, nf(1) // 2)
+        # self.input = Parameter(torch.randn((1, nf(1), 4, 4)))
+        self.face_encoder = face_encoder(resolution_log2, 2, 3, nf(1))
         self.bottom_layer = Layer(nf(1), nf(1), use_modulate=True, dlatents_dim=dlatent_size, kernel=kernel, resample_kernel=resample_kernel)
         self.trgbs.append(ToRGB(nf(1), num_channels, dlatent_size))
         
@@ -494,11 +494,10 @@ class G_synthesis_stylegan2(nn.Module):
 
     def forward(self, dlatents_in, faces_in):
         noises = [getattr(self, f'noise_{i}', None) for i in range(self.num_layers)]
-        tile_in = self.input.repeat(dlatents_in.shape[0], 1, 1, 1)
-        # face_encoding = self.face_encoder(faces_in)
-        # content_input = torch.cat([face_encoding, tile_in], dim=1)
+        # tile_in = self.input.repeat(dlatents_in.shape[0], 1, 1, 1)
+        face_encoding = self.face_encoder(faces_in)
 
-        x = self.bottom_layer(tile_in, dlatents_in[:, 0], noise=noises[0])
+        x = self.bottom_layer(face_encoding, dlatents_in[:, 0], noise=noises[0])
         if self.architecture == 'skip':
             skip = self.trgbs[0](x, dlatents_in[:, 1])
         
