@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn import Parameter
 
-from op import upfirdn2d, FusedLeakyReLU, fused_leaky_relu
+from torch_utils.ops import upfirdn2d, FusedLeakyReLU, fused_leaky_relu
 
 logger = logging.getLogger()
 activation_funcs = {

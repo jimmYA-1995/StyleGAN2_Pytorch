@@ -2,6 +2,7 @@ import os
 
 import torch
 from torch.autograd import Function
+from torch.utils.file_baton import FileBaton
 from torch.utils.cpp_extension import load
 
 

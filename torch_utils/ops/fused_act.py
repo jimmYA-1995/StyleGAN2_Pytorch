@@ -3,16 +3,18 @@ import os
 import torch
 from torch import nn
 from torch.autograd import Function
+from .. import custom_ops
 from torch.utils.cpp_extension import load
 
 
 module_path = os.path.dirname(__file__)
-fused = load(
+fused = custom_ops.get_plugin(
     'fused',
     sources=[
         os.path.join(module_path, 'fused_bias_act.cpp'),
         os.path.join(module_path, 'fused_bias_act_kernel.cu'),
     ],
+    extra_cuda_cflags=['--use_fast_math']
 )
 
 
