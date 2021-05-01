@@ -25,6 +25,17 @@ def nonsaturating_loss(fake_pred):
     return loss
 
 
+def masked_l1_loss(real_img, fake_img, mask=None):
+    if mask is not None:
+        real_img = real_img * mask
+        fake_img = fake_img * mask
+    loss = torch.abs(real_img - fake_img)
+
+    if mask is not None:
+        loss = loss / torch.sum(mask, dim=[1,2,3], keepdim=True)
+    return loss.mean()
+
+
 def path_regularize(fake_img, latents, mean_path_length, decay=0.01):
     noise = torch.randn_like(fake_img) / math.sqrt(
         fake_img.shape[2] * fake_img.shape[3]

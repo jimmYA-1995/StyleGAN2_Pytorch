@@ -179,28 +179,55 @@ class MultiChannelDataset(data.Dataset):
 
 class GenericDataset(data.Dataset):
     def __init__(self, config, resolution, transform=None, split='train', **kwargs):
-        self.paths = list((Path(config.ROOTS[0]) / split).glob('*.jpg'))
-        self.transform = transform
-        self.load_size = resolution + 30
+        self.paths = []
+        for ext in ALLOW_EXTS:
+            self.paths += list((Path(config.ROOTS[0]) / split).glob(f"*.{ext}"))
+        self.config = config
         self.resolution = resolution
+        self.transform = transform
+        
 
     def __len__(self):
         return len(self.paths)
 
     def __getitem__(self, idx):
-        img = Image.open(self.paths[idx])
-        img = img.resize((self.load_size * 2, self.load_size), Image.BILINEAR)
-        arr = np.array(img) # /255*2-1
-        w1 = (self.load_size - self.resolution) // 2
-        w2 = (self.load_size + self.resolution) // 2
-        h1, h2 = w1, w2
-        imgA = arr[h1:h2, w1:w2, :]
-        imgB = arr[h1:h2, self.load_size + w1:self.load_size + w2, :]
-            
-        if self.transform is not None:
-            imgA = self.transform(imgA)
-            imgB = self.transform(imgB)
+        raise NotImplementedError()
 
+
+class DeepFashionDataset(GenericDataset):
+    def __init__(self, config, resolution, transform=None, split='train', **kwargs):
+        super(DeepFashionDataset, self).__init__(
+            config, resolution, transform=transform, split=split, **kwargs)
+
+    def __getitem__(self, idx):
+        cfg = self.config
+        load_size = self.resolution + 30
+        img = Image.open(self.paths[idx])
+        cfg_ch = cfg.CHANNELS[0]
+        assert (img.mode == 'RGBA' and cfg_ch == 4) ^ (img.mode == 'RGB' and cfg_ch == 3), \
+            "image channel is not consistent, please check your config"
+
+        mask = None
+        if img.mode == 'RGBA':
+            mask = img.resize((load_size * 2, load_size), Image.ANTIALIAS)
+            mask = np.asarray(mask)[..., -1:]
+        img = img.convert('RGB').resize((load_size * 2, load_size), Image.ANTIALIAS)
+        img_np = np.asarray(img)
+
+        w1 = (load_size - self.resolution) // 2
+        w2 = (load_size + self.resolution) // 2
+        h1, h2 = w1, w2
+        imgA = img_np[h1:h2, w1:w2, :]
+        imgB = img_np[h1:h2, load_size + w1:load_size + w2, :]
+
+        if self.transform is not None:
+            imgA = self.transform(imgA.copy())
+            imgB = self.transform(imgB.copy())
+        
+        if mask is not None:
+            mask = mask[h1:h2, load_size + w1:load_size + w2, :]
+            mask = transforms.ToTensor()(mask.copy())
+            return imgB, imgA, mask
         return imgB, imgA
 
 

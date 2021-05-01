@@ -24,7 +24,7 @@ from dataset import get_dataset, get_dataloader
 from misc import parse_args, prepare_training
 from load_weights import load_weights_from_nv, load_partial_weights
 from models import Generator, Discriminator
-from losses import nonsaturating_loss, path_regularize, logistic_loss, d_r1_loss
+from losses import nonsaturating_loss, path_regularize, logistic_loss, d_r1_loss, masked_l1_loss
 from metrics import FIDTracker
 from config import config, update_config, convert_to_dict
 from distributed import (
@@ -215,6 +215,7 @@ class Trainer():
         # init. all 
         mean_path_length = 0
         g_loss_val = 0
+        g_rec_loss_val = 0
         d_loss_val = 0
         r1_loss = torch.tensor(0.0, device=self.device)
         path_loss = torch.tensor(0.0, device=self.device)
@@ -233,7 +234,7 @@ class Trainer():
 
         sample_z = torch.randn(self.n_sample, self.latent, device=self.device)
         val_loader = sample_data(self.val_loader)
-        sample_body_imgs, sample_face_imgs = next(val_loader)
+        sample_body_imgs, sample_face_imgs, _ = next(val_loader)
         sample_body_imgs, sample_face_imgs = sample_body_imgs.to(self.device), sample_face_imgs.to(self.device)
         fixed_fake_label = torch.randint(self.num_classes, (sample_z.shape[0],)).to(self.device) \
                            if self.num_classes > 1 else None
@@ -242,11 +243,7 @@ class Trainer():
         # start training
         for i in pbar:
             s = time()
-            body_img = labels = None
-            body_img, face_img = next(loader)
-
-            face_img = face_img.to(self.device)
-            body_img = body_img.to(self.device)
+            body_img, face_img, mask = [element.to(self.device) for element in next(loader)]
             self.logger.debug(f"input shape: {body_img.shape}")
             
             requires_grad(self.generator, False)
@@ -290,11 +287,13 @@ class Trainer():
             fake_img, _ = self.generator(noise, labels_in=fake_label, faces_in=face_img)
             fake_pred = self.discriminator(fake_img)
             g_loss = nonsaturating_loss(fake_pred)
+            g_rec_loss = masked_l1_loss(body_img, fake_img, mask=mask)
 
             loss_dict['g'] = g_loss
+            loss_dict['g_rec'] = g_rec_loss
 
             self.generator.zero_grad()
-            g_loss.backward()
+            (g_loss + g_rec_loss).backward()
             self.g_optim.step()
 
             g_regularize = i % self.g_reg_every == 0
@@ -342,6 +341,7 @@ class Trainer():
 
             d_loss_val = loss_reduced['d'].mean().item()
             g_loss_val = loss_reduced['g'].mean().item()
+            g_rec_loss_val = loss_reduced['g_rec'].mean().item()
             r1_val = loss_reduced['r1'].mean().item()
             path_loss_val = loss_reduced['path'].mean().item()
             real_score_val = loss_reduced['real_score'].mean().item()
@@ -351,7 +351,7 @@ class Trainer():
             if get_rank() == 0:
                 pbar.set_description(
                     (
-                        f'd: {d_loss_val:.4f}; g: {g_loss_val:.4f}; r1: {r1_val:.4f}; '
+                        f'd: {d_loss_val:.4f}; g: {g_loss_val:.4f}; g_rec: {g_rec_loss_val:.4f}; r1: {r1_val:.4f}; '
                         f'path: {path_loss_val:.4f}; mean path: {mean_path_length_avg:.4f}'
                     )
                 )
@@ -412,6 +412,7 @@ class Trainer():
                         {
                             'training time': time() - s,
                             'Generator': g_loss_val,
+                            'G-reconstruction': g_rec_loss_val,
                             'Discriminator': d_loss_val,
                             'R1': r1_val,
                             'Path Length Regularization': path_loss_val,
