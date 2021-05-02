@@ -344,20 +344,17 @@ class Layer(nn.Module):
 class ContentEncoder(nn.Module):
     def __init__(self, res_log2, res_out_log2, nf_in, max_nf):
         super(ContentEncoder, self).__init__()
-        convs, bns = [], []
+        convs = []
         for i in range(res_out_log2, res_log2):
             nf_out = min(64 * 2 ** (i - res_out_log2 + 1), max_nf)
             convs.append(Conv2d_layer(nf_in, nf_out, mode='down'))
-            bns.append(nn.BatchNorm2d(nf_out))
             nf_in = nf_out
         self.convs = nn.ModuleList(convs)
-        self.bns = nn.ModuleList(bns)
 
     def forward(self, x):
         outs = []
-        for conv, bn in zip(self.convs, self.bns):
+        for conv in self.convs:
             x = conv(x)
-            x = bn(x)
             outs.append(x)
 
         return outs

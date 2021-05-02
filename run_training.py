@@ -288,8 +288,7 @@ class Trainer():
             fake_img, _ = self.generator(noise, labels_in=fake_label, style_in=face_imgs, content_in=masked_body)
             fake_pred = self.discriminator(fake_img)
             g_loss = nonsaturating_loss(fake_pred)
-            g_rec_loss = masked_l1_loss(body_imgs, fake_img, mask=mask) * 100
-
+            g_rec_loss = masked_l1_loss(masked_body, fake_img, mask=mask) * 256 * 256
             loss_dict['g'] = g_loss
             loss_dict['g_rec'] = g_rec_loss
 
