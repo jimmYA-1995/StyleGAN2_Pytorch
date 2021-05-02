@@ -341,7 +341,29 @@ class Layer(nn.Module):
         return self.act(x)
 
 
-def face_encoder(res_log2, res_out_log2, nf_in, max_nf):
+class ContentEncoder(nn.Module):
+    def __init__(self, res_log2, res_out_log2, nf_in, max_nf):
+        super(ContentEncoder, self).__init__()
+        convs, bns = [], []
+        for i in range(res_out_log2, res_log2):
+            nf_out = min(64 * 2 ** (i - res_out_log2 + 1), max_nf)
+            convs.append(Conv2d_layer(nf_in, nf_out, mode='down'))
+            bns.append(nn.BatchNorm2d(nf_out))
+            nf_in = nf_out
+        self.convs = nn.ModuleList(convs)
+        self.bns = nn.ModuleList(bns)
+
+    def forward(self, x):
+        outs = []
+        for conv, bn in zip(self.convs, self.bns):
+            x = conv(x)
+            x = bn(x)
+            outs.append(x)
+
+        return outs
+
+
+def style_encoder(res_log2, res_out_log2, nf_in, max_nf):
     encoding_list = []
     for i in range(res_out_log2, res_log2):
         nf_out = min(64*(i+1), max_nf)
@@ -474,8 +496,8 @@ class G_synthesis_stylegan2(nn.Module):
                 self.register_buffer(f'noise_{layer_idx}', torch.randn(*shape))
             
         # 4x4
-        self.input = Parameter(torch.randn((1, nf(1), 4, 4)))
-        self.face_encoder = face_encoder(resolution_log2, 2, 3, nf(1) // 2)
+        self.input = Parameter(torch.randn((1, nf(1) // 2, 4, 4)))
+        self.ContentEncoder = ContentEncoder(resolution_log2, 2, 3, nf(1) // 2)
         self.bottom_layer = Layer(nf(1), nf(1), use_modulate=True, dlatents_dim=dlatent_size, kernel=kernel, resample_kernel=resample_kernel)
         self.trgbs.append(ToRGB(nf(1), num_channels, dlatent_size))
         
@@ -485,21 +507,23 @@ class G_synthesis_stylegan2(nn.Module):
         in_channel = nf(1)
         for res in range(3, self.resolution_log2 + 1):
             fmaps = nf(res-1)
+            fmaps1 = fmaps if res == self.resolution_log2 else fmaps // 2
             self.convs.extend([
-                Layer(in_channel, fmaps, use_modulate=True, dlatents_dim=dlatent_size, kernel=kernel, mode='up', resample_kernel=resample_kernel),
+                Layer(in_channel, fmaps1, use_modulate=True, dlatents_dim=dlatent_size, kernel=kernel, mode='up', resample_kernel=resample_kernel),
                 Layer(fmaps, fmaps, use_modulate=True, dlatents_dim=dlatent_size, kernel=kernel, resample_kernel=resample_kernel)
             ])
             if self.architecture == 'skip':
                 self.trgbs.append(ToRGB(fmaps, num_channels, dlatent_size))
             in_channel = fmaps
 
-    def forward(self, dlatents_in, faces_in):
+    def forward(self, dlatents_in, style_in=None, content_in=None):
         noises = [getattr(self, f'noise_{i}', None) for i in range(self.num_layers)]
         tile_in = self.input.repeat(dlatents_in.shape[0], 1, 1, 1)
-        face_encoding = self.face_encoder(faces_in)
+        content_encoding = self.ContentEncoder(content_in)
+        tile_in = torch.cat([tile_in, content_encoding[-1]], dim=1)
 
-        face_encoding = face_encoding.squeeze().unsqueeze(1).repeat(1, dlatents_in.shape[1], 1)
-        dlatents_in = torch.cat([face_encoding, dlatents_in], dim=2)
+        # face_encoding = face_encoding.squeeze().unsqueeze(1).repeat(1, dlatents_in.shape[1], 1)
+        # dlatents_in = torch.cat([face_encoding, dlatents_in], dim=2)
 
         x = self.bottom_layer(tile_in, dlatents_in[:, 0], noise=noises[0])
         if self.architecture == 'skip':
@@ -508,6 +532,8 @@ class G_synthesis_stylegan2(nn.Module):
         # main layer
         for res in range(3, self.resolution_log2 + 1):
             x = self.convs[res*2 - 6](x, dlatents_in[:, res*2-5], noises[res*2-5])
+            if res < self.resolution_log2:
+                x = torch.cat([x, content_encoding[7 - res]], dim=1)
             x = self.convs[res*2 - 5](x, dlatents_in[:, res*2-4], noises[res*2-4])
             
             if self.architecture == 'skip' or res == self.resolution_log2:

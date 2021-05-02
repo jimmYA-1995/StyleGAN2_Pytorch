@@ -121,7 +121,7 @@ class Trainer():
                                    label_size,
                                    self.resolution,
                                    embedding_size=self.embed_size,
-                                   dlatents_size=256,
+                                   # dlatents_size=256,
                                    extra_channels=config.MODEL.EXTRA_CHANNEL,
                                    is_training=True).to(self.device)
         self.discriminator = Discriminator(label_size,
@@ -131,7 +131,7 @@ class Trainer():
                                label_size,
                                self.resolution,
                                embedding_size=self.embed_size,
-                               dlatents_size=256,
+                               # dlatents_size=256,
                                extra_channels=config.MODEL.EXTRA_CHANNEL,
                                is_training=False).to(self.device)
         self.g_ema.eval()
@@ -232,19 +232,20 @@ class Trainer():
 
         accum = 0.5 ** (32 / (10 * 1000)) ##
 
-        sample_z = torch.randn(self.n_sample, self.latent, device=self.device)
         val_loader = sample_data(self.val_loader)
-        sample_body_imgs, sample_face_imgs, _ = next(val_loader)
-        sample_body_imgs, sample_face_imgs = sample_body_imgs.to(self.device), sample_face_imgs.to(self.device)
-        fixed_fake_label = torch.randint(self.num_classes, (sample_z.shape[0],)).to(self.device) \
+        sample_body_imgs, sample_face_imgs, sample_mask = [x.to(self.device) for x in next(val_loader)]
+        sample_masked_body = sample_body_imgs * sample_mask
+        del val_loader
+        sample_z = torch.randn(self.n_sample, self.latent, device=self.device)
+        sample_label = torch.randint(self.num_classes, (sample_z.shape[0],)).to(self.device) \
                            if self.num_classes > 1 else None
         self.logger.debug(f"sample vector: {sample_z.shape}")
         
         # start training
         for i in pbar:
             s = time()
-            body_img, face_img, mask = [element.to(self.device) for element in next(loader)]
-            self.logger.debug(f"input shape: {body_img.shape}")
+            body_imgs, face_imgs, mask = [x.to(self.device) for x in next(loader)]
+            masked_body = body_imgs * mask
             
             requires_grad(self.generator, False)
             requires_grad(self.discriminator, True)
@@ -252,9 +253,9 @@ class Trainer():
             noise = mixing_noise(self.batch_size, self.latent, self.mixing, self.device)
             fake_label = torch.randint(self.num_classes, (self.batch_size,)).to(self.device) \
                          if self.num_classes > 1 else None
-            fake_img, _ = self.generator(noise, labels_in=fake_label, faces_in=face_img)
+            fake_img, _ = self.generator(noise, labels_in=fake_label, style_in=face_imgs, content_in=masked_body)
             fake_pred = self.discriminator(fake_img)
-            real_pred = self.discriminator(body_img)
+            real_pred = self.discriminator(body_imgs)
 
             d_loss = logistic_loss(real_pred, fake_pred)
 
@@ -268,9 +269,9 @@ class Trainer():
 
             d_regularize = i % self.d_reg_every == 0
             if d_regularize:
-                body_img.requires_grad = True
-                real_pred = self.discriminator(body_img)
-                r1_loss = d_r1_loss(real_pred, body_img)
+                body_imgs.requires_grad = True
+                real_pred = self.discriminator(body_imgs)
+                r1_loss = d_r1_loss(real_pred, body_imgs)
 
                 self.discriminator.zero_grad()
                 (self.r1 / 2 * r1_loss * self.d_reg_every + 0 * real_pred[0]).backward()
@@ -284,10 +285,10 @@ class Trainer():
             noise = mixing_noise(self.batch_size, self.latent, self.mixing, self.device)
             fake_label = torch.randint(self.num_classes, (self.batch_size,)).to(self.device) \
                          if self.num_classes > 1 else None
-            fake_img, _ = self.generator(noise, labels_in=fake_label, faces_in=face_img)
+            fake_img, _ = self.generator(noise, labels_in=fake_label, style_in=face_imgs, content_in=masked_body)
             fake_pred = self.discriminator(fake_img)
             g_loss = nonsaturating_loss(fake_pred)
-            g_rec_loss = masked_l1_loss(body_img, fake_img, mask=mask)
+            g_rec_loss = masked_l1_loss(body_imgs, fake_img, mask=mask) * 100
 
             loss_dict['g'] = g_loss
             loss_dict['g_rec'] = g_rec_loss
@@ -306,7 +307,8 @@ class Trainer():
                 )
                 fake_label = torch.randint(self.num_classes, (path_batch_size,)).to(self.device) \
                              if self.num_classes > 0 else None
-                fake_img, latents = self.generator(noise, labels_in=fake_label, faces_in=face_img[:path_batch_size], return_latents=True)
+                fake_img, latents = self.generator(
+                    noise, labels_in=fake_label, style_in=masked_body[:path_batch_size], content_in=masked_body[:path_batch_size], return_latents=True)
 
                 path_loss, mean_path_length, path_lengths = path_regularize(
                     fake_img, latents, mean_path_length
@@ -360,8 +362,8 @@ class Trainer():
                     sample_iter = 'init' if i==0 else str(i).zfill(digits_length)
                     with torch.no_grad():
                         self.g_ema.eval()
-                        sample, _ = self.g_ema([sample_z], labels_in=fixed_fake_label, faces_in=sample_face_imgs)
-                        
+                        sample, _ = self.g_ema([sample_z], labels_in=sample_label, style_in=sample_face_imgs, content_in=sample_masked_body)
+
                         if cfg_d.DATASET == 'MultiChannelDataset':
                             sample_list = torch.split(sample, cfg_d.CHANNELS, dim=1)
                             sample_list = [(x.repeat(1,3,1,1) if x.shape[1]==1 else x)
@@ -376,7 +378,6 @@ class Trainer():
                             )
 
                         else:
-                            # sample_body_imgs, sample_face_imgs, sample
                             b, c, h, w = sample.shape
                             stack_samples = torch.stack([sample_face_imgs, sample_body_imgs, sample], dim=0)
                             samples = torch.transpose(stack_samples, 0, 1).reshape(3 * b, c, h, w)

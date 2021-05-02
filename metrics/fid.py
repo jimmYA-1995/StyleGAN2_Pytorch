@@ -165,7 +165,7 @@ class FIDTracker():
                 if batch == 0:
                     continue
 
-                imgs, _ = next(loader)
+                imgs, *_ = next(loader)
                 imgs = imgs[:batch, :3, :, :].to(self.device)
                 feature = self.inceptionV3(imgs)[0].view(imgs.shape[0], -1)
                 features.append(feature.to('cpu'))
@@ -199,8 +199,7 @@ class FIDTracker():
                 if batch == 0:
                     continue
 
-                _, face_imgs = next(loader)
-                face_imgs = face_imgs[:batch].to(self.device)
+                body_imgs, face_imgs, mask = [x.to(self.device) for x in next(loader)]
                 latent = torch.randn(batch, 512, device=self.device)
                 fake_label = torch.LongTensor([class_idx]*batch).to(self.device)
                 
@@ -208,7 +207,7 @@ class FIDTracker():
                 if self.cond_samples is not None:
                     cond_samples = self.cond_samples[:batch]
 
-                img, _ = generator([latent], labels_in=fake_label, faces_in=face_imgs)
+                img, _ = generator([latent], labels_in=fake_label, style_in=face_imgs, content_in=(body_imgs * mask))
                 feature = self.inceptionV3(img[:, :3, :, :])[0].view(img.shape[0], -1)
                 features.append(feature.to('cpu'))
 

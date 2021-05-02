@@ -59,7 +59,7 @@ class Generator(nn.Module):
             dlatents_size=dlatents_size, architecture='skip'
         )
 
-    def forward(self, latents_in, labels_in=None, faces_in=None, return_latents=None):
+    def forward(self, latents_in, labels_in=None, style_in=None, content_in=None, return_latents=None):
         # style mixing
         if len(latents_in) == 2:
             idx = random.randint(1, self.num_layers - 1)
@@ -71,7 +71,7 @@ class Generator(nn.Module):
             dlatents = self.mapping_network(latents_in[0], labels_in,
                                             dlatent_broadcast=self.num_layers)
             
-        images_out = self.synthesis_network(dlatents, faces_in)
+        images_out = self.synthesis_network(dlatents, style_in=style_in, content_in=content_in)
         if return_latents:
             return images_out, dlatents
         return images_out, None
