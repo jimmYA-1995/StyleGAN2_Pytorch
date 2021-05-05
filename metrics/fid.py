@@ -54,6 +54,7 @@ class FIDTracker():
         self.output_path = Path(output_dir)
         if not self.output_path.exists():
             self.output_path.mkdir(parents=True)
+        self.latent_size = config.MODEL.LATENT_SIZE
         self.k_iters = []
         self.real_mean = None # ndarray(n_class, 2048) float32
         self.real_cov = None # ndarray(n_class, 2048, 2048) float64
@@ -199,8 +200,8 @@ class FIDTracker():
                 if batch == 0:
                     continue
 
-                body_imgs, face_imgs, mask = [x.to(self.device) for x in next(loader)]
-                latent = torch.randn(batch, 512, device=self.device)
+                body_imgs, face_imgs, mask = [x[:batch].to(self.device) for x in next(loader)]
+                latent = torch.randn(batch, self.latent_size, device=self.device)
                 fake_label = torch.LongTensor([class_idx]*batch).to(self.device)
                 
                 cond_samples=None
@@ -276,6 +277,7 @@ if __name__ == '__main__':
         g = Generator(config.MODEL.LATENT_SIZE, label_size, config.RESOLUTION,
                       embedding_size=config.MODEL.EMBEDDING_SIZE,
                       extra_channels=config.MODEL.EXTRA_CHANNEL,
+                      dlatents_size=256,
                       use_sk=use_cond_sample, is_training=False).to(device)
         g.load_state_dict(ckpt['g_ema'])
         g = nn.DataParallel(g)
