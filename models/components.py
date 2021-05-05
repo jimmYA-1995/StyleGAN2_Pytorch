@@ -365,14 +365,13 @@ def style_encoder(res_log2, res_out_log2, nf_in, max_nf):
     for i in range(res_out_log2, res_log2):
         nf_out = min(64*(i+1), max_nf)
         encoding_list.extend(
-            [nn.Conv2d(nf_in, min(64*(i+1), max_nf), 4, 2, 1),
-             nn.BatchNorm2d(nf_out),
-             nn.LeakyReLU(0.2, inplace=True)])
+            [Conv2d_layer(nf_in, nf_out, mode='down')])
         nf_in = nf_out
     encoding_list.append(nn.AdaptiveAvgPool2d((1, 1)))
     
     return nn.Sequential(*encoding_list)
         
+
 class ToRGB(nn.Module):
     def __init__(self, in_channel, out_channel, dlatents_dim,
                  up=True, resample_kernel=[1, 3, 3, 1]):
@@ -494,6 +493,7 @@ class G_synthesis_stylegan2(nn.Module):
             
         # 4x4
         self.input = Parameter(torch.randn((1, nf(1) // 2, 4, 4)))
+        self.style_encoder = style_encoder(resolution_log2, 2, 3, nf(1) // 2)
         self.ContentEncoder = ContentEncoder(resolution_log2, 2, 3, nf(1) // 2)
         self.bottom_layer = Layer(nf(1), nf(1), use_modulate=True, dlatents_dim=dlatent_size, kernel=kernel, resample_kernel=resample_kernel)
         self.trgbs.append(ToRGB(nf(1), num_channels, dlatent_size))
@@ -517,10 +517,11 @@ class G_synthesis_stylegan2(nn.Module):
         noises = [getattr(self, f'noise_{i}', None) for i in range(self.num_layers)]
         tile_in = self.input.repeat(dlatents_in.shape[0], 1, 1, 1)
         content_encoding = self.ContentEncoder(content_in)
+        style_encoding = self.style_encoder(style_in)
         tile_in = torch.cat([tile_in, content_encoding[-1]], dim=1)
 
-        # face_encoding = face_encoding.squeeze().unsqueeze(1).repeat(1, dlatents_in.shape[1], 1)
-        # dlatents_in = torch.cat([face_encoding, dlatents_in], dim=2)
+        style_encoding = style_encoding.squeeze().unsqueeze(1).repeat(1, dlatents_in.shape[1], 1)
+        dlatents_in = torch.cat([style_encoding, dlatents_in], dim=2)
 
         x = self.bottom_layer(tile_in, dlatents_in[:, 0], noise=noises[0])
         if self.architecture == 'skip':

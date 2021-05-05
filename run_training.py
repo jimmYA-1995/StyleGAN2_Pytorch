@@ -121,7 +121,7 @@ class Trainer():
                                    label_size,
                                    self.resolution,
                                    embedding_size=self.embed_size,
-                                   # dlatents_size=256,
+                                   dlatents_size=256,
                                    extra_channels=config.MODEL.EXTRA_CHANNEL,
                                    is_training=True).to(self.device)
         self.discriminator = Discriminator(label_size,
@@ -131,7 +131,7 @@ class Trainer():
                                label_size,
                                self.resolution,
                                embedding_size=self.embed_size,
-                               # dlatents_size=256,
+                               dlatents_size=256,
                                extra_channels=config.MODEL.EXTRA_CHANNEL,
                                is_training=False).to(self.device)
         self.g_ema.eval()
@@ -307,7 +307,7 @@ class Trainer():
                 fake_label = torch.randint(self.num_classes, (path_batch_size,)).to(self.device) \
                              if self.num_classes > 0 else None
                 fake_img, latents = self.generator(
-                    noise, labels_in=fake_label, style_in=masked_body[:path_batch_size], content_in=masked_body[:path_batch_size], return_latents=True)
+                    noise, labels_in=fake_label, style_in=face_imgs[:path_batch_size], content_in=masked_body[:path_batch_size], return_latents=True)
 
                 path_loss, mean_path_length, path_lengths = path_regularize(
                     fake_img, latents, mean_path_length
