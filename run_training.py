@@ -22,8 +22,8 @@ except ImportError:
 
 from dataset import get_dataset, get_dataloader
 from misc import parse_args, prepare_training
-from load_weights import load_weights_from_nv, load_partial_weights
 from models import Generator, Discriminator
+from models.utils import load_weights_from_nv, load_partial_weights
 from losses import nonsaturating_loss, path_regularize, logistic_loss, d_r1_loss, masked_l1_loss
 from metrics import FIDTracker
 from config import config, update_config, convert_to_dict
