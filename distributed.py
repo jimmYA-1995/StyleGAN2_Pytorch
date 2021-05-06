@@ -29,10 +29,12 @@ def get_rank():
         return dist.get_rank()
     return 0
 
+
 def get_world_size():
     if dist.is_available() and dist.is_initialized():
         dist.get_world_size()
     return 1
+
 
 def synchronize():
     if not dist.is_available():
@@ -47,16 +49,6 @@ def synchronize():
         return
 
     dist.barrier()
-
-
-# def get_world_size():
-#     if not dist.is_available():
-#         return 1
-
-#     if not dist.is_initialized():
-#         return 1
-
-#     return dist.get_world_size()
 
 
 def reduce_sum(tensor):

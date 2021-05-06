@@ -228,11 +228,8 @@ class FIDTracker():
 
 
 if __name__ == '__main__':
-    
-    import sys
     from models import Generator
     from config import config, update_config
-    from run_training import get_dataloader
     device = 'cuda'
     parser = argparse.ArgumentParser()
 
