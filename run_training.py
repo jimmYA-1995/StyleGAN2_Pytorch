@@ -319,8 +319,8 @@ class Trainer():
                                              inplace=True),
                     ]
             transform = transforms.Compose(trf)
-            
-            for p in (Path(config.DATASET.ROOTS[0]) / 'sample_sk').glob('*.jpg'):
+            ps = list((Path(config.DATASET.ROOTS[0]) / 'sample_sk').glob('*.jpg'))[:self.n_sample]
+            for p in ps:
                 sample_sk.append(transform(io.imread(p)[..., None])[None, ...])
             sample_sk = torch.cat(sample_sk, dim=0).to('cuda')
             
