@@ -229,8 +229,9 @@ class DeepFashionDataset(GenericDataset):
             # Gaussian blur
             # https://discuss.pytorch.org/t/is-there-anyway-to-do-gaussian-filtering-for-an-image-2d-3d-in-pytorch/12351/10
             kernel = np.random.uniform(3, 3)
-            blur = np.asarray(Image.fromarray(mask[..., 0], mode='L').filter(ImageFilter.GaussianBlur(kernel)))
-            masks = np.concatenate((mask, blur[..., None]), axis=-1)
+            blur = np.asarray(Image.fromarray(mask[..., 0], mode='L').filter(ImageFilter.GaussianBlur(kernel)))[..., None]
+            blur = np.where(mask == 0, 0, blur)
+            masks = np.concatenate((mask, blur), axis=-1)
             masks = transforms.ToTensor()(masks.copy())
             return imgB, imgA, masks
         return imgB, imgA
