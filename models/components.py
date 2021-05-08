@@ -494,7 +494,7 @@ class G_synthesis_stylegan2(nn.Module):
         # 4x4
         self.input = Parameter(torch.randn((1, nf(1) // 2, 4, 4)))
         self.style_encoder = style_encoder(resolution_log2, 2, 3, nf(1) // 2)
-        self.ContentEncoder = ContentEncoder(resolution_log2, 2, 3, nf(1) // 2)
+        self.ContentEncoder = ContentEncoder(resolution_log2, 2, 4, nf(1) // 2)
         self.bottom_layer = Layer(nf(1), nf(1), use_modulate=True, dlatents_dim=dlatent_size, kernel=kernel, resample_kernel=resample_kernel)
         self.trgbs.append(ToRGB(nf(1), num_channels, dlatent_size))
         
