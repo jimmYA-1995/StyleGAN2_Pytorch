@@ -234,6 +234,7 @@ class Trainer():
 
         val_loader = sample_data(self.val_loader)
         sample_body_imgs, sample_face_imgs, sample_mask = [x.to(self.device) for x in next(val_loader)]
+        sample_mask, sample_blur_mask = torch.split(sample_mask, 1, dim=1)
         sample_masked_body = torch.cat([sample_body_imgs * sample_mask, sample_mask], dim=1)
         del val_loader
         sample_z = torch.randn(self.n_sample, self.latent, device=self.device)
@@ -245,6 +246,7 @@ class Trainer():
         for i in pbar:
             s = time()
             body_imgs, face_imgs, mask = [x.to(self.device) for x in next(loader)]
+            mask, blur_mask = torch.split(mask, 1, dim=1)
             masked_body = torch.cat([body_imgs * mask, mask], dim=1)
             
             requires_grad(self.generator, False)
@@ -288,7 +290,7 @@ class Trainer():
             fake_img, _ = self.generator(noise, labels_in=fake_label, style_in=face_imgs, content_in=masked_body)
             fake_pred = self.discriminator(fake_img)
             g_loss = nonsaturating_loss(fake_pred)
-            g_rec_loss = masked_l1_loss(masked_body[:, :3, :, :], fake_img, mask=mask) * 256 * 256
+            g_rec_loss = masked_l1_loss(masked_body[:, :3, :, :], fake_img, mask=blur_mask) * 256 * 256
             loss_dict['g'] = g_loss
             loss_dict['g_rec'] = g_rec_loss
 

@@ -5,7 +5,7 @@ from functools import partial
 from tqdm import tqdm
 import lmdb
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter
 from torch.utils import data
 from torchvision import transforms
 from torchvision.datasets import ImageFolder
@@ -226,8 +226,13 @@ class DeepFashionDataset(GenericDataset):
         
         if mask is not None:
             mask = mask[h1:h2, load_size + w1:load_size + w2, :]
-            mask = transforms.ToTensor()(mask.copy())
-            return imgB, imgA, mask
+            # Gaussian blur
+            # https://discuss.pytorch.org/t/is-there-anyway-to-do-gaussian-filtering-for-an-image-2d-3d-in-pytorch/12351/10
+            kernel = np.random.uniform(3, 3)
+            blur = np.asarray(Image.fromarray(mask[..., 0], mode='L').filter(ImageFilter.GaussianBlur(kernel)))
+            masks = np.concatenate((mask, blur[..., None]), axis=-1)
+            masks = transforms.ToTensor()(masks.copy())
+            return imgB, imgA, masks
         return imgB, imgA
 
 
