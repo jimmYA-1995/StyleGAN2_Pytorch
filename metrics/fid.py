@@ -201,6 +201,8 @@ class FIDTracker():
                     continue
 
                 body_imgs, face_imgs, mask = [x[:batch].to(self.device) for x in next(loader)]
+                mask, blur_mask = torch.chunk(mask, 2, dim=1)
+                masked_body = torch.cat(((body_imgs * mask), mask), dim=1)
                 latent = torch.randn(batch, self.latent_size, device=self.device)
                 fake_label = torch.LongTensor([class_idx]*batch).to(self.device)
                 
@@ -208,7 +210,7 @@ class FIDTracker():
                 if self.cond_samples is not None:
                     cond_samples = self.cond_samples[:batch]
 
-                img, _ = generator([latent], labels_in=fake_label, style_in=face_imgs, content_in=(body_imgs * mask))
+                img, _ = generator([latent], labels_in=fake_label, style_in=face_imgs, content_in=masked_body)
                 feature = self.inceptionV3(img[:, :3, :, :])[0].view(img.shape[0], -1)
                 features.append(feature.to('cpu'))
 
