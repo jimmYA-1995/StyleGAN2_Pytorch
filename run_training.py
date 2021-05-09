@@ -14,11 +14,7 @@ from torch import nn, autograd, optim
 from torch.nn import functional as F
 from torchvision import transforms, utils
 from tqdm import tqdm
-
-try:
-    import wandb
-except ImportError: 
-    wandb = None
+import wandb
 
 from dataset import get_dataset, get_dataloader
 from misc import parse_args, prepare_training
@@ -40,6 +36,7 @@ from distributed import (
 def requires_grad(model, flag=True):
     for p in model.parameters():
         p.requires_grad = flag
+
 
 def accumulate(model1, model2, decay=0.999):
     par1 = dict(model1.named_parameters())
@@ -77,9 +74,10 @@ def set_grad_none(model, targets):
         if n in targets:
             p.grad = None
 
+
 class Trainer():
     def __init__(self, args, config, logger, ddp=False):
-        
+
         # dummy. mod. in the future
         self.device = 'cuda'
         self.config = config
@@ -92,7 +90,7 @@ class Trainer():
         self.resolution = config.RESOLUTION
         self.num_classes = config.N_CLASSES
         # model
-        
+
         self.n_mlp = config.MODEL.N_MLP
         self.latent = config.MODEL.LATENT_SIZE
         self.embed_size = config.MODEL.EMBEDDING_SIZE
@@ -104,16 +102,17 @@ class Trainer():
         self.d_reg_every = config.TRAIN.D_REG_EVERY
         self.path_regularize = config.TRAIN.PATH_REGULARIZE
         self.path_batch_shrink = config.TRAIN.PATH_BATCH_SHRINK
-        
+
         self.fid_tracker = None
-        
+
         # datset
         print("get dataloader ...")
         t = time()
         self.loader = get_dataloader(config, self.batch_size, distributed=ddp)
-        self.val_loader = get_dataloader(config, self.n_sample, split='val', distributed=ddp)
+        self.val_loader = get_dataloader(
+            config, self.n_sample, split='val', distributed=ddp)
         print(f"get dataloader complete ({time() - t})")
-        
+
         # Define model
         assert self.num_classes >= 1
         label_size = 0 if self.num_classes == 1 else self.num_classes
@@ -136,7 +135,7 @@ class Trainer():
                                is_training=False).to(self.device)
         self.g_ema.eval()
         accumulate(self.g_ema, self.generator, 0)
-        
+
         g_reg_ratio = self.g_reg_every / (self.g_reg_every + 1)
         d_reg_ratio = self.d_reg_every / (self.d_reg_every + 1)
 
@@ -150,21 +149,23 @@ class Trainer():
             lr=config.TRAIN.LR * d_reg_ratio,
             betas=(0 ** d_reg_ratio, 0.99 ** d_reg_ratio)
         )
-        
+
         self.total_step = config.TRAIN.ITERATION
         self.start_iter = 0
         if config.TRAIN.NV_WEIGHTS_PATH:
-            load_weights_from_nv(self.generator, self.discriminator, self.g_ema, config.TRAIN.NV_WEIGHTS_PATH)
+            load_weights_from_nv(
+                self.generator, self.discriminator, self.g_ema, config.TRAIN.NV_WEIGHTS_PATH)
         elif config.TRAIN.CKPT:
             print('load model:', config.TRAIN.CKPT)
             ckpt = torch.load(config.TRAIN.CKPT)
 
             try:
-                self.start_iter = int(Path(config.TRAIN.CKPT).stem.split('-')[1])
+                self.start_iter = int(
+                    Path(config.TRAIN.CKPT).stem.split('-')[1])
             except ValueError:
                 logger.info('**** load ckpt failed. start from scratch ****')
                 pass
-            
+
             try:
                 self.generator.load_state_dict(ckpt['g'])
                 self.discriminator.load_state_dict(ckpt['d'])
@@ -173,7 +174,8 @@ class Trainer():
                 self.g_optim.load_state_dict(ckpt['g_optim'])
                 self.d_optim.load_state_dict(ckpt['d_optim'])
             except RuntimeError:
-                logger.warn(" *** using hacky way to load partial weight to model *** ")
+                logger.warn(
+                    " *** using hacky way to load partial weight to model *** ")
                 self.start_iter = load_partial_weights(
                     self.generator, self.discriminator, self.g_ema, ckpt, logger=logger)
 
@@ -191,28 +193,29 @@ class Trainer():
                 output_device=self.local_rank,
                 broadcast_buffers=False
             )
-        
+
         # init. FID tracker if needed.
         if 'fid' in config.EVAL.METRICS.split(',') and get_rank() == 0:
             self.fid_tracker = FIDTracker(config, self.out_dir, use_tqdm=True)
         synchronize()
-            
+
     def train(self):
         cfg_d = self.config.DATASET
         cfg_t = self.config.TRAIN
-        
+
         digits_length = len(str(cfg_t.ITERATION))
         loader = sample_data(self.loader)
-        
+
         if self.start_iter >= self.total_step:
             print("the current iteration already meet your target iteration")
             return
 
         pbar = range(self.start_iter, self.total_step)
         if get_rank() == 0:
-            pbar = tqdm(pbar, total=self.total_step, initial=self.start_iter, dynamic_ncols=True, smoothing=0.01)
+            pbar = tqdm(pbar, total=self.total_step,
+                        initial=self.start_iter, dynamic_ncols=True, smoothing=0.01)
 
-        # init. all 
+        # init. all
         mean_path_length = 0
         g_loss_val = 0
         g_rec_loss_val = 0
@@ -230,30 +233,34 @@ class Trainer():
             g_module = self.generator
             d_module = self.discriminator
 
-        accum = 0.5 ** (32 / (10 * 1000)) ##
+        accum = 0.5 ** (32 / (10 * 1000))
 
         val_loader = sample_data(self.val_loader)
-        sample_body_imgs, sample_face_imgs, sample_mask = [x.to(self.device) for x in next(val_loader)]
+        sample_body_imgs, sample_face_imgs, sample_mask = [
+            x.to(self.device) for x in next(val_loader)]
         sample_masked_body = sample_body_imgs * sample_mask
         del val_loader
         sample_z = torch.randn(self.n_sample, self.latent, device=self.device)
-        sample_label = torch.randint(self.num_classes, (sample_z.shape[0],)).to(self.device) \
-                           if self.num_classes > 1 else None
+        sample_label = (torch.randint(self.num_classes, (sample_z.shape[0],)).to(self.device)
+                        if self.num_classes > 1 else None)
         self.logger.debug(f"sample vector: {sample_z.shape}")
-        
-        # start training
+
+        # main loop
         for i in pbar:
             s = time()
-            body_imgs, face_imgs, mask = [x.to(self.device) for x in next(loader)]
+            body_imgs, face_imgs, mask = [
+                x.to(self.device) for x in next(loader)]
             masked_body = body_imgs * mask
-            
+
             requires_grad(self.generator, False)
             requires_grad(self.discriminator, True)
 
-            noise = mixing_noise(self.batch_size, self.latent, self.mixing, self.device)
-            fake_label = torch.randint(self.num_classes, (self.batch_size,)).to(self.device) \
-                         if self.num_classes > 1 else None
-            fake_img, _ = self.generator(noise, labels_in=fake_label, style_in=face_imgs, content_in=masked_body)
+            noise = mixing_noise(
+                self.batch_size, self.latent, self.mixing, self.device)
+            fake_label = (torch.randint(self.num_classes, (self.batch_size,)).to(self.device)
+                          if self.num_classes > 1 else None)
+            fake_img, _ = self.generator(
+                noise, labels_in=fake_label, style_in=face_imgs, content_in=masked_body)
             fake_pred = self.discriminator(fake_img)
             real_pred = self.discriminator(body_imgs)
 
@@ -282,13 +289,16 @@ class Trainer():
             requires_grad(self.generator, True)
             requires_grad(self.discriminator, False)
 
-            noise = mixing_noise(self.batch_size, self.latent, self.mixing, self.device)
-            fake_label = torch.randint(self.num_classes, (self.batch_size,)).to(self.device) \
-                         if self.num_classes > 1 else None
-            fake_img, _ = self.generator(noise, labels_in=fake_label, style_in=face_imgs, content_in=masked_body)
+            noise = mixing_noise(
+                self.batch_size, self.latent, self.mixing, self.device)
+            fake_label = (torch.randint(self.num_classes, (self.batch_size,)).to(self.device)
+                          if self.num_classes > 1 else None)
+            fake_img, _ = self.generator(
+                noise, labels_in=fake_label, style_in=face_imgs, content_in=masked_body)
             fake_pred = self.discriminator(fake_img)
             g_loss = nonsaturating_loss(fake_pred)
-            g_rec_loss = masked_l1_loss(masked_body, fake_img, mask=mask) * 256 * 256
+            g_rec_loss = masked_l1_loss(
+                masked_body, fake_img, mask=mask) * 256 * 256
             loss_dict['g'] = g_loss
             loss_dict['g_rec'] = g_rec_loss
 
@@ -300,12 +310,13 @@ class Trainer():
 
             if g_regularize:
                 self.logger.debug("Apply regularization to G")
-                path_batch_size = max(1, self.batch_size // self.path_batch_shrink)
+                path_batch_size = max(
+                    1, self.batch_size // self.path_batch_shrink)
                 noise = mixing_noise(
                     path_batch_size, self.latent, self.mixing, self.device
                 )
-                fake_label = torch.randint(self.num_classes, (path_batch_size,)).to(self.device) \
-                             if self.num_classes > 0 else None
+                fake_label = (torch.randint(self.num_classes, (path_batch_size,)).to(self.device)
+                              if self.num_classes > 0 else None)
                 fake_img, latents = self.generator(
                     noise, labels_in=fake_label, style_in=face_imgs[:path_batch_size], content_in=masked_body[:path_batch_size], return_latents=True)
 
@@ -331,10 +342,9 @@ class Trainer():
             loss_dict['path_length'] = path_lengths.mean()
 
             accumulate(self.g_ema, g_module, accum)
-            
-            if get_rank() == 0 and self.fid_tracker is not None and \
-                i != 0 and (i+1) % self.config.EVAL.FID.EVERY == 0:
-                k_iter = (i+1) / 1000
+
+            if (get_rank() == 0 and i != 0 and (i + 1) % self.config.EVAL.FID.EVERY == 0):
+                k_iter = (i + 1) / 1000
                 self.g_ema.eval()
                 self.fid_tracker.calc_fid(self.g_ema, k_iter, save=True)
 
@@ -357,17 +367,20 @@ class Trainer():
                     )
                 )
 
-                if i == 0 or (i+1) % cfg_t.SAMPLE_EVERY == 0:
-                    sample_iter = 'init' if i==0 else str(i).zfill(digits_length)
+                if i == 0 or (i + 1) % cfg_t.SAMPLE_EVERY == 0:
+                    sample_iter = 'init' if i == 0 else str(
+                        i).zfill(digits_length)
                     with torch.no_grad():
                         self.g_ema.eval()
-                        sample, _ = self.g_ema([sample_z], labels_in=sample_label, style_in=sample_face_imgs, content_in=sample_masked_body)
+                        sample, _ = self.g_ema(
+                            [sample_z], labels_in=sample_label, style_in=sample_face_imgs, content_in=sample_masked_body)
 
                         if cfg_d.DATASET == 'MultiChannelDataset':
-                            sample_list = torch.split(sample, cfg_d.CHANNELS, dim=1)
-                            sample_list = [(x.repeat(1,3,1,1) if x.shape[1]==1 else x)
+                            sample_list = torch.split(
+                                sample, cfg_d.CHANNELS, dim=1)
+                            sample_list = [(x.repeat(1, 3, 1, 1) if x.shape[1] == 1 else x)
                                            for x in sample_list]
-                                
+
                             utils.save_image(
                                 list(torch.cat(sample_list, dim=2).unbind(0)),
                                 self.out_dir / f'samples/fake-{sample_iter}.png',
@@ -378,8 +391,10 @@ class Trainer():
 
                         else:
                             b, c, h, w = sample.shape
-                            stack_samples = torch.stack([sample_face_imgs, sample_body_imgs, sample], dim=0)
-                            samples = torch.transpose(stack_samples, 0, 1).reshape(3 * b, c, h, w)
+                            stack_samples = torch.stack(
+                                [sample_face_imgs, sample_body_imgs, sample], dim=0)
+                            samples = torch.transpose(
+                                stack_samples, 0, 1).reshape(3 * b, c, h, w)
                             utils.save_image(
                                 samples,
                                 self.out_dir / f'samples/fake-{sample_iter}.png',
@@ -388,67 +403,66 @@ class Trainer():
                                 range=(-1, 1),
                             )
 
-                if i == 0 or (i+1) % cfg_t.SAVE_CKPT_EVERY == 0:
-                    ckpt_iter = str(i+1).zfill(digits_length)
-                    torch.save(
-                        {
-                            'g': g_module.state_dict(),
-                            'd': d_module.state_dict(),
-                            'g_ema': self.g_ema.state_dict(),
-                            'g_optim': self.g_optim.state_dict(),
-                            'd_optim': self.d_optim.state_dict(),
-                        },
-                        self.out_dir /  f'checkpoints/ckpt-{ckpt_iter}.pt',
-                    )
+                if i == 0 or (i + 1) % cfg_t.SAVE_CKPT_EVERY == 0:
+                    ckpt_iter = str(i + 1).zfill(digits_length)
+                    snapshot = {
+                        'g': g_module.state_dict(),
+                        'd': d_module.state_dict(),
+                        'g_ema': self.g_ema.state_dict(),
+                        'g_optim': self.g_optim.state_dict(),
+                        'd_optim': self.d_optim.state_dict(),
+                    }
+                    torch.save(snapshot, self.out_dir / f'checkpoints/ckpt-{ckpt_iter}.pt')
                     ckpt_dir = self.out_dir / 'checkpoints'
                     ckpt_paths = list(ckpt_dir.glob('*.pt'))
-                    if len(ckpt_paths) > cfg_t.CKPT_MAX_KEEP+1:
-                        ckpt_idx = sorted([int(str(p.name)[5:5+digits_length]) \
-                                           for p in ckpt_paths])
-                        os.remove(ckpt_dir / f'ckpt-{str(ckpt_idx[1]).zfill(digits_length)}.pt')
+                    if len(ckpt_paths) > cfg_t.CKPT_MAX_KEEP + 1:
+                        ckpt_idx = sorted(
+                            [int(str(p.name)[5:5 + digits_length]) for p in ckpt_paths])
+                        os.remove(
+                            ckpt_dir / f'ckpt-{str(ckpt_idx[1]).zfill(digits_length)}.pt')
 
                 if wandb and self.use_wandb:
-                    wandb.log(
-                        {
-                            'training time': time() - s,
-                            'Generator': g_loss_val,
-                            'G-reconstruction': g_rec_loss_val,
-                            'Discriminator': d_loss_val,
-                            'R1': r1_val,
-                            'Path Length Regularization': path_loss_val,
-                            'Mean Path Length': mean_path_length,
-                            'Real Score': real_score_val,
-                            'Fake Score': fake_score_val,
-                            'Path Length': path_length_val,
-                        }
-                    )
+                    wandb.log({
+                        'training time': time() - s,
+                        'Generator': g_loss_val,
+                        'G-reconstruction': g_rec_loss_val,
+                        'Discriminator': d_loss_val,
+                        'R1': r1_val,
+                        'Path Length Regularization': path_loss_val,
+                        'Mean Path Length': mean_path_length,
+                        'Real Score': real_score_val,
+                        'Fake Score': fake_score_val,
+                        'Path Length': path_length_val,
+                    })
 
 
 if __name__ == '__main__':
     args = parse_args()
     update_config(config, args)
-    
+
     if 'CUDA_VISIBLE_DEVICES' in os.environ:
         print("CUDA VISIBLE DEVICES: ", os.environ['CUDA_VISIBLE_DEVICES'])
     n_gpu = torch.cuda.device_count()
     if args.local_rank >= n_gpu:
         raise RuntimeError('Recommend one process per device')
     ddp = n_gpu > 1
-    
+
     if ddp:
         torch.cuda.set_device(args.local_rank)
-        torch.distributed.init_process_group(backend='nccl', init_method='env://')
+        torch.distributed.init_process_group(
+            backend='nccl', init_method='env://')
         synchronize()
-        
+
         # maybe use configuration file to control master-slave behavior
         print = master_only(print)
         prepare_training = master_only(prepare_training)
         print("print function overriden")
-    
+
     logger, args.out_dir = prepare_training(config, args.cfg, debug=args.debug)
     if not logger:
         # add process info to slave process
-        log_format = '<SLAVE{}> %(levelname)-8s %(asctime)-15s %(message)s'.format(get_rank())
+        log_format = '<SLAVE{}> %(levelname)-8s %(asctime)-15s %(message)s'.format(
+            get_rank())
         logging.basicConfig(level=logging.WARN,
                             format=log_format)
         logger = logging.getLogger()
@@ -462,14 +476,14 @@ if __name__ == '__main__':
 
     if get_rank() == 0 and wandb is not None and args.wandb:
         print(f"initialize wandb project: {Path(args.cfg).stem}")
-        wandb.init(project=f'stylegan2-{Path(args.cfg).stem}',
-                   config=convert_to_dict(config)
+        wandb.init(
+            project=f'stylegan2-{Path(args.cfg).stem}',
+            config=convert_to_dict(config)
         )
-    
+
     logger.info("start training")
     trainer.train()
-    
+
     if get_rank() == 0 and getattr(trainer, 'fid_tracker') is not None:
         trainer.fid_tracker.plot_fid()
         (args.out_dir / 'finish.txt').touch()
-    
