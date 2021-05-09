@@ -2,98 +2,74 @@ import os
 import time
 import shutil
 import logging
-import argparse
 from pathlib import Path
-
-from pprint import pprint
 
 
 class CustomFormatter(logging.Formatter):
     """ Logging Formatter  to add colors and count warning / errors"""
-    
-    gray = "\x1b[38;21m"
-    green = "\x1b[32;21m"
-    yellow = "\x1b[33;21m"
-    red = "\x1b[31;21m"
-    bold_red = "\x1b[31;1m"
-    reset = "\x1b[0m"
-    format = "<MASTER> %(levelname)-8s - %(asctime)-15s - %(message)s (%(filename)s:%(lineno)d)"
-    
-    FORMATS = {
-        'DEBUG': gray + format + reset,
-        'INFO': green + format + reset,
-        'WARNING': yellow + format + reset,
-        'ERROR': red + format + reset,
-        'CRITICAL': bold_red + format + reset,
-    }
-    
+    def __init__(self, name):
+        gray = "\x1b[38;21m"
+        green = "\x1b[32;21m"
+        yellow = "\x1b[33;21m"
+        red = "\x1b[31;21m"
+        bold_red = "\x1b[31;1m"
+        reset = "\x1b[0m"
+        format = f"<{name}> %(levelname)-8s - %(asctime)-15s - %(message)s (%(filename)s:%(lineno)d)"
+
+        self.FORMATS = {
+            'DEBUG': gray + format + reset,
+            'INFO': green + format + reset,
+            'WARNING': yellow + format + reset,
+            'ERROR': red + format + reset,
+            'CRITICAL': bold_red + format + reset,
+        }
+        super(CustomFormatter, self).__init__()
+
     def format(self, record):
         log_fmt = self.FORMATS[record.levelname]
         formatter = logging.Formatter(log_fmt)
         return formatter.format(record)
 
-def parse_args(arg=None):
-    parser = argparse.ArgumentParser(description='arguments')
-    parser.add_argument("--debug", action='store_true', default=False, help="whether to use debug mode")
-    parser.add_argument("--cfg", default='experiments/default-cfg.py', help="path to the configuration file")
-    parser.add_argument('--local_rank', type=int, default=0)
-    parser.add_argument('--local', action='store_true')
-    parser.add_argument('--wandb', action='store_true')
-    
-    if arg:
-        args, _ = parser.parse_known_args(arg.split())
-    else:
-        args, _ = parser.parse_known_args()
 
-    return args
-
-def create_logger(out_dir, level='INFO'):
-    log_file = out_dir / 'experiment.log'
+def create_logger(out_dir, rank, debug=False):
+    filename = out_dir / 'experiment.log'
+    logger_name = None if rank == 0 else f"GPU{rank}"
+    loglevel = 'DEBUG' if debug else ('INFO' if rank == 0 else 'WARN')
     head = "%(levelname)-8s - %(asctime)-15s - %(message)s (%(filename)s:%(lineno)d)"
-    logging.basicConfig(filename=str(log_file),
-                       format=head,
-                       level=logging.DEBUG)
-    logger = logging.getLogger()
-    
-    print(f"level: {level}")
+    logging.basicConfig(filename=str(filename),
+                        format=head,
+                        level=getattr(logging, loglevel))
+
+    logger = logging.getLogger(logger_name)
+
     console = logging.StreamHandler()
-    console.setLevel(getattr(logging, level, 'INFO'))
-    console.setFormatter(CustomFormatter())
+    console.setLevel(getattr(logging, loglevel))
+    ctx_name = logger_name if logger_name is not None else 'GPU0'
+    console.setFormatter(CustomFormatter(ctx_name))
     logger.addHandler(console)
 
     return logger
 
 
-def prepare_training(cfg, cfg_path, debug=False):
-    """
-    ?? how to control logger in multi-processing
-    """
-    root_out_dir = Path(cfg.OUT_DIR)
-    if not root_out_dir.exists():
-        print('creating {}'.format(root_out_dir))
-        root_out_dir.mkdir(parents=True)
-    
-    # create run directory
-    run_id = '00000'
-    cfg_name = os.path.basename(cfg_path).split('.')[0]
-    ids = [int(str(x).split('/')[-1][:5]) for x in root_out_dir.glob("[0-9][0-9][0-9][0-9][0-9]-*")]
-    if len(ids) > 0:
-        run_id = str(sorted(ids)[-1] + 1).zfill(5)
-    
-    final_out_dir = root_out_dir / f'{run_id}-{len(os.environ["CUDA_VISIBLE_DEVICES"])}gpu-{cfg_name}'
-    final_out_dir.mkdir()
-    
-    # out of expectation
-    shutil.copyfile(cfg_path, final_out_dir / 'configuration.yml')
-    
-    (final_out_dir / 'checkpoints').mkdir()
-    (final_out_dir / 'samples').mkdir()
-    
-    loglevel = 'DEBUG' if debug else 'INFO'
-    logger = create_logger(final_out_dir, loglevel)
-    
-    return logger, final_out_dir
+# def validate_configuration(args, cfg):
+#     assert self.num_classes >= 1
 
-    
-    
-    
+
+def prepare_training(args, cfg):
+    """ populate necessary directories """
+    root_dir = Path(cfg.OUT_DIR)
+    if not root_dir.exists():
+        print('creating {}'.format(root_dir))
+        root_dir.mkdir(parents=True)
+
+    cfg_name = os.path.basename(args.cfg).split('.')[0] if args.cfg else 'default'
+    exist_IDs = [int(x.name[:5])
+                 for x in root_dir.glob("[0-9][0-9][0-9][0-9][0-9]-*")
+                 if x.is_dir()]
+    exp_ID = max(exist_IDs) + 1 if exist_IDs else 0
+    exp_ID = str(exp_ID).zfill(5)
+
+    out_dir = root_dir / f'{exp_ID}-{args.num_gpus}gpu-{cfg_name}'
+    (out_dir / 'checkpoints').mkdir(parents=True)
+    (out_dir / 'samples').mkdir(parents=True)
+    args.out_dir = out_dir

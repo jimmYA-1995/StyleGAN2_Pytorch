@@ -1,36 +1,26 @@
 import os
 import sys
-import math
 import random
-import logging
+import argparse
 from time import time
 from pathlib import Path
 from pprint import pformat
 
-import numpy as np
-import torch
-import torch.distributed as dist
-from torch import nn, autograd, optim
-from torch.nn import functional as F
-from torchvision import transforms, utils
-from tqdm import tqdm
 import wandb
+import torch
+import numpy as np
+from tqdm import tqdm
+from torch import nn, optim
+from torchvision import utils
 
+import misc
+from config import get_cfg_defaults, convert_to_dict
 from dataset import get_dataset, get_dataloader
-from misc import parse_args, prepare_training
 from models import Generator, Discriminator
 from models.utils import load_weights_from_nv, load_partial_weights
 from losses import nonsaturating_loss, path_regularize, logistic_loss, d_r1_loss, masked_l1_loss
 from metrics import FIDTracker
-from config import config, update_config, convert_to_dict
-from distributed import (
-    master_only,
-    get_rank,
-    synchronize,
-    reduce_loss_dict,
-    reduce_sum,
-    get_world_size,
-)
+from distributed import master_only, get_rank, synchronize, reduce_loss_dict, reduce_sum, get_world_size
 
 
 def requires_grad(model, flag=True):
@@ -43,7 +33,7 @@ def accumulate(model1, model2, decay=0.999):
     par2 = dict(model2.named_parameters())
 
     for k in par1.keys():
-        par1[k].data.mul_(decay).add_(1 - decay, par2[k].data)
+        par1[k].data.mul_(decay).add_(par2[k].data, alpha=1 - decay)
 
 
 def sample_data(loader):
@@ -69,70 +59,67 @@ def mixing_noise(batch, latent_dim, prob, device):
         return [make_noise(batch, latent_dim, 1, device)]
 
 
-def set_grad_none(model, targets):
-    for n, p in model.named_parameters():
-        if n in targets:
-            p.grad = None
-
-
 class Trainer():
-    def __init__(self, args, config, logger, ddp=False):
-
-        # dummy. mod. in the future
+    def __init__(self, args, cfg, logger):
         self.device = 'cuda'
-        self.config = config
-        self.logger = logger
+        self.cfg = cfg
+        self.log = logger
         self.local_rank = args.local_rank
-        self.distributed = ddp
+        self.distributed = args.num_gpus > 1
         self.out_dir = args.out_dir
         self.use_wandb = args.wandb
-        self.n_sample = config.N_SAMPLE
-        self.resolution = config.RESOLUTION
-        self.num_classes = config.N_CLASSES
-        # model
+        self.n_sample = cfg.N_SAMPLE
+        self.resolution = cfg.RESOLUTION
+        self.num_classes = cfg.N_CLASSES
 
-        self.n_mlp = config.MODEL.N_MLP
-        self.latent = config.MODEL.LATENT_SIZE
-        self.embed_size = config.MODEL.EMBEDDING_SIZE
-        # self.extra_channels = config.MODEL.EXTRA_CHANNEL
-        self.batch_size = config.TRAIN.BATCH_SIZE_PER_GPU
-        self.mixing = config.TRAIN.STYLE_MIXING_PROB
-        self.r1 = config.TRAIN.R1
-        self.g_reg_every = config.TRAIN.G_REG_EVERY
-        self.d_reg_every = config.TRAIN.D_REG_EVERY
-        self.path_regularize = config.TRAIN.PATH_REGULARIZE
-        self.path_batch_shrink = config.TRAIN.PATH_BATCH_SHRINK
+        # model
+        self.n_mlp = cfg.MODEL.N_MLP
+        self.latent = cfg.MODEL.LATENT_SIZE
+        self.embed_size = cfg.MODEL.EMBEDDING_SIZE
+        self.batch_size = cfg.TRAIN.BATCH_SIZE_PER_GPU
+        self.mixing = cfg.TRAIN.STYLE_MIXING_PROB
+        self.r1 = cfg.TRAIN.R1
+        self.g_reg_every = cfg.TRAIN.G_REG_EVERY
+        self.d_reg_every = cfg.TRAIN.D_REG_EVERY
+        self.path_regularize = cfg.TRAIN.PATH_REGULARIZE
+        self.path_batch_shrink = cfg.TRAIN.PATH_BATCH_SHRINK
 
         self.fid_tracker = None
 
         # datset
-        print("get dataloader ...")
         t = time()
-        self.loader = get_dataloader(config, self.batch_size, distributed=ddp)
-        self.val_loader = get_dataloader(
-            config, self.n_sample, split='val', distributed=ddp)
-        print(f"get dataloader complete ({time() - t})")
+        print("get dataloader ...", end='\r')
+        self.loader = get_dataloader(cfg, self.batch_size, distributed=self.distributed)
+        self.val_loader = get_dataloader(cfg, self.n_sample, split='val', distributed=self.distributed)
+        print(f"get dataloader complete ({time() - t :.2f} sec)")
 
         # Define model
-        assert self.num_classes >= 1
         label_size = 0 if self.num_classes == 1 else self.num_classes
-        self.generator = Generator(self.latent,
-                                   label_size,
-                                   self.resolution,
-                                   embedding_size=self.embed_size,
-                                   dlatents_size=256,
-                                   extra_channels=config.MODEL.EXTRA_CHANNEL,
-                                   is_training=True).to(self.device)
-        self.discriminator = Discriminator(label_size,
-                                           self.resolution,
-                                           extra_channels=config.MODEL.EXTRA_CHANNEL).to(self.device)
-        self.g_ema = Generator(self.latent,
-                               label_size,
-                               self.resolution,
-                               embedding_size=self.embed_size,
-                               dlatents_size=256,
-                               extra_channels=config.MODEL.EXTRA_CHANNEL,
-                               is_training=False).to(self.device)
+        self.generator = Generator(
+            self.latent,
+            label_size,
+            self.resolution,
+            embedding_size=self.embed_size,
+            dlatents_size=256,
+            extra_channels=cfg.MODEL.EXTRA_CHANNEL,
+            is_training=True
+        ).to(self.device)
+
+        self.discriminator = Discriminator(
+            label_size,
+            self.resolution,
+            extra_channels=cfg.MODEL.EXTRA_CHANNEL
+        ).to(self.device)
+
+        self.g_ema = Generator(
+            self.latent,
+            label_size,
+            self.resolution,
+            embedding_size=self.embed_size,
+            dlatents_size=256,
+            extra_channels=cfg.MODEL.EXTRA_CHANNEL,
+            is_training=False
+        ).to(self.device)
         self.g_ema.eval()
         accumulate(self.g_ema, self.generator, 0)
 
@@ -141,27 +128,26 @@ class Trainer():
 
         self.g_optim = optim.Adam(
             self.generator.parameters(),
-            lr=config.TRAIN.LR * g_reg_ratio,
+            lr=cfg.TRAIN.LR * g_reg_ratio,
             betas=(0 ** g_reg_ratio, 0.99 ** g_reg_ratio)
         )
         self.d_optim = optim.Adam(
             self.discriminator.parameters(),
-            lr=config.TRAIN.LR * d_reg_ratio,
+            lr=cfg.TRAIN.LR * d_reg_ratio,
             betas=(0 ** d_reg_ratio, 0.99 ** d_reg_ratio)
         )
 
-        self.total_step = config.TRAIN.ITERATION
+        self.total_step = cfg.TRAIN.ITERATION
         self.start_iter = 0
-        if config.TRAIN.NV_WEIGHTS_PATH:
+        if cfg.TRAIN.NV_WEIGHTS_PATH:
             load_weights_from_nv(
-                self.generator, self.discriminator, self.g_ema, config.TRAIN.NV_WEIGHTS_PATH)
-        elif config.TRAIN.CKPT:
-            print('load model:', config.TRAIN.CKPT)
-            ckpt = torch.load(config.TRAIN.CKPT)
+                self.generator, self.discriminator, self.g_ema, cfg.TRAIN.NV_WEIGHTS_PATH)
+        elif cfg.TRAIN.CKPT:
+            print(f'resume model from {cfg.TRAIN.CKPT}')
+            ckpt = torch.load(cfg.TRAIN.CKPT)
 
             try:
-                self.start_iter = int(
-                    Path(config.TRAIN.CKPT).stem.split('-')[1])
+                self.start_iter = int(Path(cfg.TRAIN.CKPT).stem.split('-')[1])
             except ValueError:
                 logger.info('**** load ckpt failed. start from scratch ****')
                 pass
@@ -195,13 +181,13 @@ class Trainer():
             )
 
         # init. FID tracker if needed.
-        if 'fid' in config.EVAL.METRICS.split(',') and get_rank() == 0:
-            self.fid_tracker = FIDTracker(config, self.out_dir, use_tqdm=True)
+        if 'fid' in cfg.EVAL.METRICS.split(',') and get_rank() == 0:
+            self.fid_tracker = FIDTracker(cfg, self.out_dir, use_tqdm=True)
         synchronize()
 
     def train(self):
-        cfg_d = self.config.DATASET
-        cfg_t = self.config.TRAIN
+        cfg_d = self.cfg.DATASET
+        cfg_t = self.cfg.TRAIN
 
         digits_length = len(str(cfg_t.ITERATION))
         loader = sample_data(self.loader)
@@ -243,7 +229,7 @@ class Trainer():
         sample_z = torch.randn(self.n_sample, self.latent, device=self.device)
         sample_label = (torch.randint(self.num_classes, (sample_z.shape[0],)).to(self.device)
                         if self.num_classes > 1 else None)
-        self.logger.debug(f"sample vector: {sample_z.shape}")
+        self.log.debug(f"sample vector: {sample_z.shape}")
 
         # main loop
         for i in pbar:
@@ -309,7 +295,7 @@ class Trainer():
             g_regularize = i % self.g_reg_every == 0
 
             if g_regularize:
-                self.logger.debug("Apply regularization to G")
+                self.log.debug("Apply regularization to G")
                 path_batch_size = max(
                     1, self.batch_size // self.path_batch_shrink)
                 noise = mixing_noise(
@@ -343,7 +329,7 @@ class Trainer():
 
             accumulate(self.g_ema, g_module, accum)
 
-            if (get_rank() == 0 and i != 0 and (i + 1) % self.config.EVAL.FID.EVERY == 0):
+            if (get_rank() == 0 and i != 0 and (i + 1) % self.cfg.EVAL.FID.EVERY == 0):
                 k_iter = (i + 1) / 1000
                 self.g_ema.eval()
                 self.fid_tracker.calc_fid(self.g_ema, k_iter, save=True)
@@ -376,8 +362,7 @@ class Trainer():
                             [sample_z], labels_in=sample_label, style_in=sample_face_imgs, content_in=sample_masked_body)
 
                         if cfg_d.DATASET == 'MultiChannelDataset':
-                            sample_list = torch.split(
-                                sample, cfg_d.CHANNELS, dim=1)
+                            sample_list = torch.split(sample, cfg_d.CHANNELS, dim=1)
                             sample_list = [(x.repeat(1, 3, 1, 1) if x.shape[1] == 1 else x)
                                            for x in sample_list]
 
@@ -386,7 +371,7 @@ class Trainer():
                                 self.out_dir / f'samples/fake-{sample_iter}.png',
                                 nrow=int(self.n_sample ** 0.5) * 3,
                                 normalize=True,
-                                range=(-1, 1),
+                                range=(-1, 1),  # value_range in PyTorch 1.8+
                             )
 
                         else:
@@ -435,55 +420,53 @@ class Trainer():
                         'Path Length': path_length_val,
                     })
 
+        if args.local_rank == 0 and self.fid_tracker:
+            self.fid_tracker.plot_fid()
+
 
 if __name__ == '__main__':
-    args = parse_args()
-    update_config(config, args)
+    parser = argparse.ArgumentParser(prog='torch.distributed.launch')
+    parser.add_argument('-c', '--cfg', help="path to the configuration file", metavar='PATH')
+    parser.add_argument('--local_rank', type=int, default=0, metavar='INT', help='Automatically given by %(prog)s')
+    parser.add_argument('--debug', action='store_true')
+    parser.add_argument('--wandb', action='store_true')
+    args = parser.parse_args()
 
-    if 'CUDA_VISIBLE_DEVICES' in os.environ:
-        print("CUDA VISIBLE DEVICES: ", os.environ['CUDA_VISIBLE_DEVICES'])
-    n_gpu = torch.cuda.device_count()
-    if args.local_rank >= n_gpu:
-        raise RuntimeError('Recommend one process per device')
-    ddp = n_gpu > 1
+    cfg = get_cfg_defaults()
+    if args.cfg:
+        cfg.merge_from_file(args.cfg)
 
-    if ddp:
+    args.num_gpus = torch.cuda.device_count()
+    if args.num_gpus > 1:
+        assert 0 <= args.local_rank < args.num_gpus, 'Recommend one process per device'
         torch.cuda.set_device(args.local_rank)
         torch.distributed.init_process_group(
-            backend='nccl', init_method='env://')
+            backend='nccl', init_method='env://', rank=args.local_rank, world_size=args.num_gpus)
         synchronize()
 
-        # maybe use configuration file to control master-slave behavior
         print = master_only(print)
-        prepare_training = master_only(prepare_training)
         print("print function overriden")
 
-    logger, args.out_dir = prepare_training(config, args.cfg, debug=args.debug)
-    if not logger:
-        # add process info to slave process
-        log_format = '<SLAVE{}> %(levelname)-8s %(asctime)-15s %(message)s'.format(
-            get_rank())
-        logging.basicConfig(level=logging.WARN,
-                            format=log_format)
-        logger = logging.getLogger()
+    if args.num_gpus == 1 or args.local_rank == 0:
+        misc.prepare_training(args, cfg)
 
-    logger.debug(pformat(config))
-    logger.info("Only keep logs of master in log file")
-    logger.info("initialize trainer...")
+    logger = misc.create_logger(args.out_dir, args.local_rank, args.debug)
+
+    logger.debug(pformat(cfg))
     t = time()
-    trainer = Trainer(args, config, logger, ddp=ddp)
-    logger.info(f"trainer initialized. (costs {time() - t})")
+    logger.info("initialize trainer...")
+    trainer = Trainer(args, cfg, logger)
+    logger.info(f"trainer initialized. ({time() - t :.2f} sec)")
 
-    if get_rank() == 0 and wandb is not None and args.wandb:
-        print(f"initialize wandb project: {Path(args.cfg).stem}")
+    if args.local_rank == 0 and args.wandb:
+        logger.info(f"initialize wandb project: {Path(args.cfg).stem}")
         wandb.init(
             project=f'stylegan2-{Path(args.cfg).stem}',
-            config=convert_to_dict(config)
+            config=convert_to_dict(cfg)
         )
 
-    logger.info("start training")
+    cfg.freeze()
     trainer.train()
 
-    if get_rank() == 0 and getattr(trainer, 'fid_tracker') is not None:
-        trainer.fid_tracker.plot_fid()
+    if args.local_rank == 0:
         (args.out_dir / 'finish.txt').touch()

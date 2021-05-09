@@ -16,10 +16,12 @@ from tqdm import tqdm
 from dataset import get_dataloader_for_each_class, get_dataloader
 from .calc_inception import load_patched_inception_v3
 
+
 def sample_data(loader):
     while True:
         for batch in loader:
             yield batch
+
 
 def load_condition_sample(sample_dir, batch_size):
     IMG_EXTS = ['jpg', 'png', 'jpeg']
@@ -28,20 +30,20 @@ def load_condition_sample(sample_dir, batch_size):
         samples.extend(list(Path(sample_dir).glob(f'*.{ext}')))
     assert len(samples) >= batch_size, f"Need more samples. {len(samples)} < {batch_size}"
     cond_samples = []
-                
+
     trf = [
-                transforms.ToTensor(),
-                transforms.Normalize([0.5], [5],
-                                     inplace=True),
-            ]
+        transforms.ToTensor(),
+        transforms.Normalize([0.5], [5], inplace=True),
+    ]
     transform = transforms.Compose(trf)
-    
+
     for i, p in enumerate():
         if batch_size != -1 and i == batch_size:
             break
         cond_samples.append(transform(io.imread(p)[..., None])[None, ...])
     return torch.cat(cond_samples, dim=0)
-            
+
+
 class FIDTracker():
     def __init__(self, config, output_dir, use_tqdm=False):
 
@@ -56,10 +58,10 @@ class FIDTracker():
             self.output_path.mkdir(parents=True)
         self.latent_size = config.MODEL.LATENT_SIZE
         self.k_iters = []
-        self.real_mean = None # ndarray(n_class, 2048) float32
-        self.real_cov = None # ndarray(n_class, 2048, 2048) float64
+        self.real_mean = None  # ndarray(n_class, 2048) float32
+        self.real_cov = None  # ndarray(n_class, 2048, 2048) float64
         self.fids = []
-        self.conditional = True if config.N_CLASSES > 1 else False 
+        self.conditional = True if config.N_CLASSES > 1 else False
         self.num_classes = config.N_CLASSES
         self.cond_samples = None
         self.n_batch = fid_config.N_SAMPLE // fid_config.BATCH_SIZE
@@ -74,14 +76,13 @@ class FIDTracker():
                                 Get {self.cond_samples.shape[0]} conditional sample")
             self.model_bs = self.cond_samples.shape[0]
 
-        
         # get inception V3 model
         start = time.time()
         self.logger.info("load inception model...")
         self.inceptionV3 = torch.nn.DataParallel(load_patched_inception_v3()).to(self.device)
         self.inceptionV3.eval()
         self.logger.info("load inception model complete ({:.2f})".format(time.time() - start))
- 
+
         # get features for real images
         if inception_path:
             self.logger.info("load inception from cache file")
@@ -102,7 +103,7 @@ class FIDTracker():
         self.logger.info(f'get fid on {k_iter * 1000} iterations')
         start = time.time()
         sample_features = self.extract_feature_from_model(generator)
-        
+
         fids = []
         for i, sample_feature in enumerate(sample_features):
             sample_mean = np.mean(sample_feature, 0)
@@ -128,17 +129,17 @@ class FIDTracker():
 
             trace = np.trace(sample_cov) + np.trace(self.real_cov[i]) - 2 * np.trace(cov_sqrt)
             fids.append(mean_norm + trace)
-            
+
         finish = time.time()
         self.logger.info(f'FID in {str(1000 * k_iter).zfill(6)} \
              iterations: "{fids}". [costs {round(finish - start, 2)} sec(s)]')
         self.k_iters.append(k_iter)
         self.fids.append(fids)
-    
+
         if save:
             with open(self.output_path / 'fid.txt', 'a+') as f:
                 f.write(f'{k_iter}: {fids}\n')
-        
+
         return fids
 
     @torch.no_grad()
@@ -150,19 +151,19 @@ class FIDTracker():
             dataloaders = [get_dataloader(config, self.config.BATCH_SIZE)]
             idx_to_class = [None]
         start = time.time()
-        
+
         real_mean_list = []
         real_cov_list = []
-        
+
         for i, dataloader in enumerate(dataloaders):
             self.logger.info(f'extract features from real "{idx_to_class[i]}" images...')
             features = []
             loader = sample_data(dataloader)
-        
+
             if self.use_tqdm:
                 idx_iterator = tqdm(self.idx_iterator)
             for i in idx_iterator:
-                batch = self.resid if i==self.n_batch else self.config.BATCH_SIZE
+                batch = self.resid if i == self.n_batch else self.config.BATCH_SIZE
                 if batch == 0:
                     continue
 
@@ -179,7 +180,7 @@ class FIDTracker():
 
             self.logger.info(f"complete({round(time.time() - start, 2)} secs). \
                                total extracted features: {features.shape[0]}")
-            
+
         return real_mean_list, real_cov_list, idx_to_class
 
     @torch.no_grad()
@@ -188,7 +189,7 @@ class FIDTracker():
         resid = self.config.N_SAMPLE % self.model_bs
         features_list = []
         loader = sample_data(self.val_loader)
-        
+
         for class_idx in range(self.num_classes):
             features = []
             idx_iterator = range(n_batch + 1)
@@ -196,15 +197,15 @@ class FIDTracker():
                 idx_iterator = tqdm(idx_iterator)
 
             for i in idx_iterator:
-                batch = resid if i==n_batch else self.model_bs
+                batch = resid if i == n_batch else self.model_bs
                 if batch == 0:
                     continue
 
                 body_imgs, face_imgs, mask = [x[:batch].to(self.device) for x in next(loader)]
                 latent = torch.randn(batch, self.latent_size, device=self.device)
-                fake_label = torch.LongTensor([class_idx]*batch).to(self.device)
-                
-                cond_samples=None
+                fake_label = torch.LongTensor([class_idx] * batch).to(self.device)
+
+                cond_samples = None
                 if self.cond_samples is not None:
                     cond_samples = self.cond_samples[:batch]
 
@@ -214,10 +215,10 @@ class FIDTracker():
 
             features_list.append(torch.cat(features, 0).numpy())
         return features_list
-    
-    def plot_fid(self,):
+
+    def plot_fid(self):
         self.logger.info(f"save FID figure in {str(self.output_path / 'fid.png')}")
-        
+
         self.fids = np.array(self.fids).T
         plt.xlabel('k iterations')
         plt.ylabel('FID')
@@ -229,25 +230,26 @@ class FIDTracker():
 
 if __name__ == '__main__':
     from models import Generator
-    from config import config, update_config
+    from config import get_cfg_defaults
     device = 'cuda'
-    parser = argparse.ArgumentParser()
 
+    parser = argparse.ArgumentParser()
     parser.add_argument('--truncation', type=float, default=1)
     parser.add_argument('--truncation_mean', type=int, default=4096)
     parser.add_argument("--cfg", required=True, help="path to the configuration file")
     parser.add_argument('--out_dir', type=str, default='/tmp/fid_result')
     parser.add_argument('--ckpt', type=str, default="", metavar='CHECKPOINT', help='model ckpt or dir')
     parser.add_argument("--debug", action='store_true', default=False, help="whether to use debug mode")
-                      
+
     args = parser.parse_args()
-    
+    cfg = get_cfg_defaults()
+    if args.cfg:
+        cfg.merge_from_file(args.cfg)
+
     loglevel = "DEBUG" if args.debug else "INFO"
     head = "%(levelname)-8s - %(asctime)-15s - %(message)s (%(filename)s:%(lineno)d)"
-    logging.basicConfig(level=loglevel,
-                        format=head)
+    logging.basicConfig(level=loglevel, format=head)
     logger = logging.getLogger()
-    update_config(config, args)
 
     use_cond_sample = True if config.EVAL.FID.SAMPLE_DIR else False
     fid_tracker = FIDTracker(config, args.out_dir, use_tqdm=True)
@@ -261,13 +263,13 @@ if __name__ == '__main__':
             if args.ckpt.is_dir() else [args.ckpt]
 
     logger.info(f"Get FID of the following {len(ckpts)} ckpt files: {[str(ckpt) for ckpt in ckpts]}")
-    
+
     for ckpt in ckpts:
         logging.info(f"calculating fid of {str(ckpt)}")
         ckpt_name = str(ckpt.name)[5:11]
         k_iter = int(ckpt_name)/1000
         ckpt = torch.load(ckpt)
-        
+
         # latent_dim, label_size, resolution
         assert config.N_CLASSES >= 1, f"#classes must greater than 0"
         label_size = 0 if config.N_CLASSES == 1 else config.N_CLASSES
@@ -285,7 +287,7 @@ if __name__ == '__main__':
         #         mean_latent = g.mean_latent(args.truncation_mean)
         # else:
         #     mean_latent = None
-        
+
         fid_tracker.calc_fid(g, k_iter, save=True)
-    
+
     fid_tracker.plot_fid()
