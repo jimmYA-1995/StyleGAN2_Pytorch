@@ -90,7 +90,7 @@ class Trainer():
         t = time()
         print("get dataloader ...", end='\r')
         self.loader = get_dataloader(cfg, self.batch_size, distributed=self.distributed)
-        self.val_loader = get_dataloader(cfg, self.n_sample, split='val', distributed=self.distributed)
+        val_loader = get_dataloader(cfg, self.n_sample, split='val', distributed=self.distributed)
         print(f"get dataloader complete ({time() - t :.2f} sec)")
 
         # Define model
@@ -221,7 +221,7 @@ class Trainer():
 
         accum = 0.5 ** (32 / (10 * 1000))
 
-        val_loader = sample_data(self.val_loader)
+        val_loader = sample_data(val_loader)
         sample_body_imgs, sample_face_imgs, sample_mask = [
             x.to(self.device) for x in next(val_loader)]
         sample_masked_body = sample_body_imgs * sample_mask
