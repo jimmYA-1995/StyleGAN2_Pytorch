@@ -1,5 +1,6 @@
 import os
 import sys
+import copy
 import random
 import argparse
 from time import time
@@ -61,7 +62,6 @@ def mixing_noise(batch, latent_dim, prob, device):
 
 class Trainer():
     def __init__(self, args, cfg, logger):
-        self.device = 'cuda'
         self.cfg = cfg
         self.log = logger
         self.local_rank = args.local_rank
@@ -69,24 +69,14 @@ class Trainer():
         self.out_dir = args.out_dir
         self.use_wandb = args.wandb
         self.n_sample = cfg.N_SAMPLE
-        self.resolution = cfg.RESOLUTION
         self.num_classes = cfg.N_CLASSES
-
-        # model
-        self.n_mlp = cfg.MODEL.N_MLP
         self.latent = cfg.MODEL.LATENT_SIZE
-        self.embed_size = cfg.MODEL.EMBEDDING_SIZE
         self.batch_size = cfg.TRAIN.BATCH_SIZE_PER_GPU
-        self.mixing = cfg.TRAIN.STYLE_MIXING_PROB
-        self.r1 = cfg.TRAIN.R1
-        self.g_reg_every = cfg.TRAIN.G_REG_EVERY
-        self.d_reg_every = cfg.TRAIN.D_REG_EVERY
-        self.path_regularize = cfg.TRAIN.PATH_REGULARIZE
-        self.path_batch_shrink = cfg.TRAIN.PATH_BATCH_SHRINK
-
+        self.device = torch.device(f'cuda:{args.local_rank}')
+        self.metrics = cfg.EVAL.METRICS.split(',')
         self.fid_tracker = None
 
-        # datset
+        # Datset
         t = time()
         print("get dataloader ...", end='\r')
         self.loader = get_dataloader(cfg, self.batch_size, distributed=self.distributed)
@@ -95,53 +85,44 @@ class Trainer():
 
         # Define model
         label_size = 0 if self.num_classes == 1 else self.num_classes
-        self.generator = Generator(
-            self.latent,
+        self.g = Generator(
+            cfg.MODEL.LATENT_SIZE,
             label_size,
-            self.resolution,
-            embedding_size=self.embed_size,
+            cfg.RESOLUTION,
+            embedding_size=cfg.MODEL.EMBEDDING_SIZE,
             dlatents_size=256,
             extra_channels=cfg.MODEL.EXTRA_CHANNEL,
             is_training=True
         ).to(self.device)
 
-        self.discriminator = Discriminator(
+        self.d = Discriminator(
             label_size,
-            self.resolution,
+            cfg.RESOLUTION,
             extra_channels=cfg.MODEL.EXTRA_CHANNEL
         ).to(self.device)
 
-        self.g_ema = Generator(
-            self.latent,
-            label_size,
-            self.resolution,
-            embedding_size=self.embed_size,
-            dlatents_size=256,
-            extra_channels=cfg.MODEL.EXTRA_CHANNEL,
-            is_training=False
-        ).to(self.device)
-        self.g_ema.eval()
-        accumulate(self.g_ema, self.generator, 0)
+        self.g_ema = copy.deepcopy(self.g).eval()
+        accumulate(self.g_ema, self.g, 0)
 
-        g_reg_ratio = self.g_reg_every / (self.g_reg_every + 1)
-        d_reg_ratio = self.d_reg_every / (self.d_reg_every + 1)
-
+        # Define optimizers
+        g_reg_ratio = cfg_t.G_REG_EVERY / (cfg_t.G_REG_EVERY + 1)
+        d_reg_ratio = cfg_t.D_REG_EVERY / (cfg_t.D_REG_EVERY + 1)
         self.g_optim = optim.Adam(
-            self.generator.parameters(),
+            self.g.parameters(),
             lr=cfg.TRAIN.LR * g_reg_ratio,
             betas=(0 ** g_reg_ratio, 0.99 ** g_reg_ratio)
         )
         self.d_optim = optim.Adam(
-            self.discriminator.parameters(),
+            self.d.parameters(),
             lr=cfg.TRAIN.LR * d_reg_ratio,
             betas=(0 ** d_reg_ratio, 0.99 ** d_reg_ratio)
         )
 
-        self.total_step = cfg.TRAIN.ITERATION
+        # resume from checkpoints if given
         self.start_iter = 0
         if cfg.TRAIN.NV_WEIGHTS_PATH:
             load_weights_from_nv(
-                self.generator, self.discriminator, self.g_ema, cfg.TRAIN.NV_WEIGHTS_PATH)
+                self.g, self.d, self.g_ema, cfg.TRAIN.NV_WEIGHTS_PATH)
         elif cfg.TRAIN.CKPT:
             print(f'resume model from {cfg.TRAIN.CKPT}')
             ckpt = torch.load(cfg.TRAIN.CKPT)
@@ -153,8 +134,8 @@ class Trainer():
                 pass
 
             try:
-                self.generator.load_state_dict(ckpt['g'])
-                self.discriminator.load_state_dict(ckpt['d'])
+                self.g.load_state_dict(ckpt['g'])
+                self.d.load_state_dict(ckpt['d'])
                 self.g_ema.load_state_dict(ckpt['g_ema'])
 
                 self.g_optim.load_state_dict(ckpt['g_optim'])
@@ -163,27 +144,27 @@ class Trainer():
                 logger.warn(
                     " *** using hacky way to load partial weight to model *** ")
                 self.start_iter = load_partial_weights(
-                    self.generator, self.discriminator, self.g_ema, ckpt, logger=logger)
+                    self.g, self.d, self.g_ema, ckpt, logger=logger)
 
         if self.distributed:
-            self.generator = nn.parallel.DistributedDataParallel(
-                self.generator,
+            self.g = nn.parallel.DistributedDataParallel(
+                self.g,
                 device_ids=[self.local_rank],
                 output_device=self.local_rank,
                 broadcast_buffers=False
             )
 
-            self.discriminator = nn.parallel.DistributedDataParallel(
-                self.discriminator,
+            self.d = nn.parallel.DistributedDataParallel(
+                self.d,
                 device_ids=[self.local_rank],
                 output_device=self.local_rank,
                 broadcast_buffers=False
             )
 
         # init. FID tracker if needed.
-        if 'fid' in cfg.EVAL.METRICS.split(',') and get_rank() == 0:
+        if 'fid' in self.metrics and args.local_rank == 0:
             self.fid_tracker = FIDTracker(cfg, self.out_dir, use_tqdm=True)
-        synchronize()
+        # synchronize()
 
     def train(self):
         cfg_d = self.cfg.DATASET
@@ -192,13 +173,13 @@ class Trainer():
         digits_length = len(str(cfg_t.ITERATION))
         loader = sample_data(self.loader)
 
-        if self.start_iter >= self.total_step:
+        if self.start_iter >= cfg_t.ITERATION:
             print("the current iteration already meet your target iteration")
             return
 
-        pbar = range(self.start_iter, self.total_step)
+        pbar = range(self.start_iter, cfg_t.ITERATION)
         if get_rank() == 0:
-            pbar = tqdm(pbar, total=self.total_step,
+            pbar = tqdm(pbar, total=cfg_t.ITERATION,
                         initial=self.start_iter, dynamic_ncols=True, smoothing=0.01)
 
         # init. all
@@ -213,11 +194,11 @@ class Trainer():
         loss_dict = {}
 
         if self.distributed:
-            g_module = self.generator.module
-            d_module = self.discriminator.module
+            g_module = self.g.module
+            d_module = self.d.module
         else:
-            g_module = self.generator
-            d_module = self.discriminator
+            g_module = self.g
+            d_module = self.d
 
         accum = 0.5 ** (32 / (10 * 1000))
 
@@ -238,17 +219,15 @@ class Trainer():
                 x.to(self.device) for x in next(loader)]
             masked_body = body_imgs * mask
 
-            requires_grad(self.generator, False)
-            requires_grad(self.discriminator, True)
+            requires_grad(self.g, False)
+            requires_grad(self.d, True)
 
-            noise = mixing_noise(
-                self.batch_size, self.latent, self.mixing, self.device)
+            noise = mixing_noise(self.batch_size, self.latent, cfg_t.STYLE_MIXING_PROB, self.device)
             fake_label = (torch.randint(self.num_classes, (self.batch_size,)).to(self.device)
                           if self.num_classes > 1 else None)
-            fake_img, _ = self.generator(
-                noise, labels_in=fake_label, style_in=face_imgs, content_in=masked_body)
-            fake_pred = self.discriminator(fake_img)
-            real_pred = self.discriminator(body_imgs)
+            fake_img, _ = self.g(noise, labels_in=fake_label, style_in=face_imgs, content_in=masked_body)
+            fake_pred = self.d(fake_img)
+            real_pred = self.d(body_imgs)
 
             d_loss = logistic_loss(real_pred, fake_pred)
 
@@ -256,64 +235,64 @@ class Trainer():
             loss_dict['real_score'] = real_pred.mean()
             loss_dict['fake_score'] = fake_pred.mean()
 
-            self.discriminator.zero_grad()
+            self.d.zero_grad()
             d_loss.backward()
             self.d_optim.step()
 
-            d_regularize = i % self.d_reg_every == 0
+            d_regularize = i % cfg_t.D_REG_EVERY == 0
             if d_regularize:
                 body_imgs.requires_grad = True
-                real_pred = self.discriminator(body_imgs)
+                real_pred = self.d(body_imgs)
                 r1_loss = d_r1_loss(real_pred, body_imgs)
 
-                self.discriminator.zero_grad()
-                (self.r1 / 2 * r1_loss * self.d_reg_every + 0 * real_pred[0]).backward()
+                self.d.zero_grad()
+                (cfg_t.R1 / 2 * r1_loss * cfg_t.D_REG_EVERY + 0 * real_pred[0]).backward()
                 self.d_optim.step()
 
             loss_dict['r1'] = r1_loss
 
-            requires_grad(self.generator, True)
-            requires_grad(self.discriminator, False)
+            requires_grad(self.g, True)
+            requires_grad(self.d, False)
 
             noise = mixing_noise(
-                self.batch_size, self.latent, self.mixing, self.device)
+                self.batch_size, self.latent, cfg_t.STYLE_MIXING_PROB, self.device)
             fake_label = (torch.randint(self.num_classes, (self.batch_size,)).to(self.device)
                           if self.num_classes > 1 else None)
-            fake_img, _ = self.generator(
+            fake_img, _ = self.g(
                 noise, labels_in=fake_label, style_in=face_imgs, content_in=masked_body)
-            fake_pred = self.discriminator(fake_img)
+            fake_pred = self.d(fake_img)
             g_loss = nonsaturating_loss(fake_pred)
             g_rec_loss = masked_l1_loss(
                 masked_body, fake_img, mask=mask) * 256 * 256
             loss_dict['g'] = g_loss
             loss_dict['g_rec'] = g_rec_loss
 
-            self.generator.zero_grad()
+            self.g.zero_grad()
             (g_loss + g_rec_loss).backward()
             self.g_optim.step()
 
-            g_regularize = i % self.g_reg_every == 0
+            g_regularize = i % cfg_t.G_REG_EVERY == 0
 
             if g_regularize:
                 self.log.debug("Apply regularization to G")
                 path_batch_size = max(
-                    1, self.batch_size // self.path_batch_shrink)
+                    1, self.batch_size // cfg_t.PATH_BATCH_SHRINK)
                 noise = mixing_noise(
-                    path_batch_size, self.latent, self.mixing, self.device
+                    path_batch_size, self.latent, cfg_t.STYLE_MIXING_PROB, self.device
                 )
                 fake_label = (torch.randint(self.num_classes, (path_batch_size,)).to(self.device)
                               if self.num_classes > 0 else None)
-                fake_img, latents = self.generator(
+                fake_img, latents = self.g(
                     noise, labels_in=fake_label, style_in=face_imgs[:path_batch_size], content_in=masked_body[:path_batch_size], return_latents=True)
 
                 path_loss, mean_path_length, path_lengths = path_regularize(
                     fake_img, latents, mean_path_length
                 )
 
-                self.generator.zero_grad()
-                weighted_path_loss = self.path_regularize * self.g_reg_every * path_loss
+                self.g.zero_grad()
+                weighted_path_loss = cfg_t.PATH_REGULARIZE * cfg_t.G_REG_EVERY * path_loss
 
-                if self.path_batch_shrink:
+                if cfg_t.PATH_BATCH_SHRINK:
                     weighted_path_loss += 0 * fake_img[0, 0, 0, 0]
 
                 weighted_path_loss.backward()
