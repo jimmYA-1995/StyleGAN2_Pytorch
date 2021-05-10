@@ -446,7 +446,8 @@ if __name__ == '__main__':
 
         print = master_only(print)
         print("print function overriden")
-
+    
+    args.out_dir = None
     if args.num_gpus == 1 or args.local_rank == 0:
         misc.prepare_training(args, cfg)
 

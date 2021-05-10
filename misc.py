@@ -29,24 +29,33 @@ class CustomFormatter(logging.Formatter):
         log_fmt = self.FORMATS[record.levelname]
         formatter = logging.Formatter(log_fmt)
         return formatter.format(record)
-
+    
 
 def create_logger(out_dir, rank, debug=False):
-    filename = out_dir / 'experiment.log'
     logger_name = None if rank == 0 else f"GPU{rank}"
+    ctx_name = logger_name if logger_name is not None else 'GPU0'
     loglevel = 'DEBUG' if debug else ('INFO' if rank == 0 else 'WARN')
-    head = "%(levelname)-8s - %(asctime)-15s - %(message)s (%(filename)s:%(lineno)d)"
-    logging.basicConfig(filename=str(filename),
-                        format=head,
-                        level=getattr(logging, loglevel))
 
     logger = logging.getLogger(logger_name)
-
-    console = logging.StreamHandler()
-    console.setLevel(getattr(logging, loglevel))
-    ctx_name = logger_name if logger_name is not None else 'GPU0'
-    console.setFormatter(CustomFormatter(ctx_name))
-    logger.addHandler(console)
+    logger.setLevel(getattr(logging, loglevel))
+    ch = logging.StreamHandler()
+    ch.setLevel(getattr(logging, loglevel))
+    ch.setFormatter(CustomFormatter(ctx_name))
+    logger.addHandler(ch)
+    
+    # disable PIL dubug mode
+    pil_logger = logging.getLogger('PIL')
+    pil_logger.setLevel(logging.INFO)
+    
+    if rank == 0:
+        # TODO: logging to a single file from multiple processes
+        # https://docs.python.org/3/howto/logging-cookbook.html#logging-to-a-single-file-from-multiple-processes
+        filename = out_dir / 'experiment.log'
+        head = "%(levelname)-8s - %(asctime)-15s - %(message)s (%(filename)s:%(lineno)d)"
+        fh = logging.FileHandler(filename)
+        fh.setLevel(getattr(logging, loglevel))
+        fh.setFormatter(head)
+        logger.addHandler(fh)
 
     return logger
 
