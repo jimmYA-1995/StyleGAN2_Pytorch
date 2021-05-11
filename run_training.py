@@ -22,7 +22,7 @@ from models import Generator, Discriminator
 from models.utils import load_weights_from_nv, load_partial_weights
 from losses import nonsaturating_loss, path_regularize, logistic_loss, d_r1_loss, masked_l1_loss
 from metrics import FIDTracker
-from distributed import master_only, get_rank, synchronize, reduce_loss_dict, reduce_sum, get_world_size
+from distributed import master_only, synchronize
 
 
 def requires_grad(model, flag=True):
@@ -173,7 +173,7 @@ class Trainer():
 
         loader = sample_data(self.loader)
         pbar = range(self.start_iter, cfg_t.ITERATION)
-        if get_rank() == 0:
+        if self.local_rank == 0:
             pbar = tqdm(pbar, total=cfg_t.ITERATION, initial=self.start_iter, dynamic_ncols=True, smoothing=0.01)
 
         # main loop
@@ -252,24 +252,19 @@ class Trainer():
 
             accumulate(self.g_ema, g_module, ema_beta)
 
-            if (get_rank() == 0 and i != 0 and (i + 1) % self.cfg.EVAL.FID.EVERY == 0):
+            if (self.local_rank == 0 and i != 0 and (i + 1) % self.cfg.EVAL.FID.EVERY == 0):
                 k_iter = (i + 1) / 1000
                 self.g_ema.eval()
                 self.fid_tracker.calc_fid(self.g_ema, k_iter, save=True)
 
             # reduce loss
             with torch.no_grad():
-                losses_list = torch.stack(list(loss_dict.values()), dim=0)
+                losses_list = [torch.stack(list(loss_dict.values()), dim=0)]
                 torch.distributed.reduce_multigpu(losses_list, dst=0)
 
             if self.local_rank == 0:
                 reduced_loss = {k: (v / self.num_gpus).item()
                                 for k, v in zip(loss_dict.keys(), losses_list[0])}
-
-                pbar.set_description(
-                    """d: {d:.4f}; g: {g:.4f}; g_rec: {g_rec:.4f}; r1: {r1:.4f}; path: {path:.4f}; mean path: {mean_path:.4f}
-                    """.format(**reduced_loss)
-                )
 
                 if i == 0 or (i + 1) % cfg_t.SAMPLE_EVERY == 0:
                     sample_iter = 'init' if i == 0 else str(i).zfill(digits_length)
@@ -332,6 +327,10 @@ class Trainer():
                         'Real Score': reduced_loss['real_score'],
                         'Fake Score': reduced_loss['fake_score'],
                     })
+                    
+                pbar.set_description(
+                    "d: {d:.4f}; g: {g:.4f}; g_rec: {g_rec:.4f}; r1: {r1:.4f}; path: {path:.4f}; mean path: {mean_path:.4f}".format(**reduced_loss)
+                )
 
         if args.local_rank == 0 and self.fid_tracker:
             self.fid_tracker.plot_fid()
