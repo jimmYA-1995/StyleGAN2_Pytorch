@@ -45,34 +45,34 @@ def load_condition_sample(sample_dir, batch_size):
 
 
 class FIDTracker():
-    def __init__(self, config, output_dir, use_tqdm=False):
+    def __init__(self, cfg, output_dir, use_tqdm=False):
 
-        fid_config = config.EVAL.FID
-        inception_path = fid_config.INCEPTION_CACHE
+        fid_cfg = cfg.EVAL.FID
+        inception_path = fid_cfg.INCEPTION_CACHE
 
         self.device = 'cuda'
-        self.config = fid_config
+        self.cfg = fid_cfg
         self.logger = logging.getLogger()
         self.output_path = Path(output_dir)
         if not self.output_path.exists():
             self.output_path.mkdir(parents=True)
-        self.latent_size = config.MODEL.LATENT_SIZE
+        self.latent_size = cfg.MODEL.LATENT_SIZE
         self.k_iters = []
         self.real_mean = None  # ndarray(n_class, 2048) float32
         self.real_cov = None  # ndarray(n_class, 2048, 2048) float64
         self.fids = []
-        self.conditional = True if config.N_CLASSES > 1 else False
-        self.num_classes = config.N_CLASSES
+        self.conditional = True if cfg.N_CLASSES > 1 else False
+        self.num_classes = cfg.N_CLASSES
         self.cond_samples = None
-        self.n_batch = fid_config.N_SAMPLE // fid_config.BATCH_SIZE
-        self.resid = fid_config.N_SAMPLE % fid_config.BATCH_SIZE
+        self.n_batch = fid_cfg.N_SAMPLE // fid_cfg.BATCH_SIZE
+        self.resid = fid_cfg.N_SAMPLE % fid_cfg.BATCH_SIZE
         self.idx_iterator = range(self.n_batch + 1)
         self.use_tqdm = use_tqdm
-        self.model_bs = config.N_SAMPLE
-        if fid_config.SAMPLE_DIR:
-            self.cond_samples = load_condition_sample(fid_config.SAMPLE_DIR, self.model_bs)
+        self.model_bs = cfg.N_SAMPLE
+        if fid_cfg.SAMPLE_DIR:
+            self.cond_samples = load_condition_sample(fid_cfg.SAMPLE_DIR, self.model_bs)
             self.cond_samples = self.cond_samples.to(self.device)
-            self.logger.info(f"using smaple directory: {fid_config.SAMPLE_DIR}. \
+            self.logger.info(f"using smaple directory: {fid_cfg.SAMPLE_DIR}. \
                                 Get {self.cond_samples.shape[0]} conditional sample")
             self.model_bs = self.cond_samples.shape[0]
 
@@ -92,12 +92,12 @@ class FIDTracker():
                 self.real_cov = embeds['cov']
                 self.idx_to_class = embeds['idx_to_class']
         else:
-            self.real_mean, self.real_cov, self.idx_to_class = self.extract_feature_from_real_images(config)
+            self.real_mean, self.real_cov, self.idx_to_class = self.extract_feature_from_real_images(cfg)
             self.logger.info(f"save inception cache in {self.output_path}")
             with open(self.output_path / 'inception_cache.pkl', 'wb') as f:
                 pickle.dump(dict(mean=self.real_mean, cov=self.real_cov, idx_to_class=self.idx_to_class), f)
 
-        self.val_loader = get_dataloader(config, self.model_bs, n_workers=1, split='val')
+        self.val_loader = get_dataloader(cfg, self.model_bs, n_workers=1, split='val')
 
     def calc_fid(self, generator, k_iter, save=False, eps=1e-6):
         self.logger.info(f'get fid on {k_iter * 1000} iterations')
@@ -143,12 +143,12 @@ class FIDTracker():
         return fids
 
     @torch.no_grad()
-    def extract_feature_from_real_images(self, config):
+    def extract_feature_from_real_images(self, cfg):
         if self.num_classes > 1:
-            dataloaders, idx_to_class = get_dataloader_for_each_class(config, self.config.BATCH_SIZE)
+            dataloaders, idx_to_class = get_dataloader_for_each_class(cfg, self.cfg.BATCH_SIZE)
             assert self.num_classes == len(idx_to_class), "N_CLASSES in user config not equal to #class in dataset"
         else:
-            dataloaders = [get_dataloader(config, self.config.BATCH_SIZE)]
+            dataloaders = [get_dataloader(cfg, self.cfg.BATCH_SIZE)]
             idx_to_class = [None]
         start = time.time()
 
@@ -163,7 +163,7 @@ class FIDTracker():
             if self.use_tqdm:
                 idx_iterator = tqdm(self.idx_iterator)
             for i in idx_iterator:
-                batch = self.resid if i == self.n_batch else self.config.BATCH_SIZE
+                batch = self.resid if i == self.n_batch else self.cfg.BATCH_SIZE
                 if batch == 0:
                     continue
 
@@ -185,8 +185,8 @@ class FIDTracker():
 
     @torch.no_grad()
     def extract_feature_from_model(self, generator):
-        n_batch = self.config.N_SAMPLE // self.model_bs
-        resid = self.config.N_SAMPLE % self.model_bs
+        n_batch = self.cfg.N_SAMPLE // self.model_bs
+        resid = self.cfg.N_SAMPLE % self.model_bs
         features_list = []
         loader = sample_data(self.val_loader)
 
@@ -251,8 +251,8 @@ if __name__ == '__main__':
     logging.basicConfig(level=loglevel, format=head)
     logger = logging.getLogger()
 
-    use_cond_sample = True if config.EVAL.FID.SAMPLE_DIR else False
-    fid_tracker = FIDTracker(config, args.out_dir, use_tqdm=True)
+    use_cond_sample = True if cfg.EVAL.FID.SAMPLE_DIR else False
+    fid_tracker = FIDTracker(cfg, args.out_dir, use_tqdm=True)
 
     if not args.ckpt:
         print("checkpoint(s) not found. Only get features of real images.\n return...")
@@ -271,11 +271,11 @@ if __name__ == '__main__':
         ckpt = torch.load(ckpt)
 
         # latent_dim, label_size, resolution
-        assert config.N_CLASSES >= 1, f"#classes must greater than 0"
-        label_size = 0 if config.N_CLASSES == 1 else config.N_CLASSES
-        g = Generator(config.MODEL.LATENT_SIZE, label_size, config.RESOLUTION,
-                      embedding_size=config.MODEL.EMBEDDING_SIZE,
-                      extra_channels=config.MODEL.EXTRA_CHANNEL,
+        assert cfg.N_CLASSES >= 1, f"#classes must greater than 0"
+        label_size = 0 if cfg.N_CLASSES == 1 else cfg.N_CLASSES
+        g = Generator(cfg.MODEL.LATENT_SIZE, label_size, cfg.RESOLUTION,
+                      embedding_size=cfg.MODEL.EMBEDDING_SIZE,
+                      extra_channels=cfg.MODEL.EXTRA_CHANNEL,
                       dlatents_size=256,
                       use_sk=use_cond_sample, is_training=False).to(device)
         g.load_state_dict(ckpt['g_ema'])

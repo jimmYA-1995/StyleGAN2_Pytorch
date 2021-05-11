@@ -19,7 +19,6 @@ import misc
 from config import get_cfg_defaults, convert_to_dict
 from dataset import get_dataset, get_dataloader
 from models import Generator, Discriminator
-from models.utils import load_weights_from_nv, load_partial_weights
 from losses import nonsaturating_loss, path_regularize, logistic_loss, d_r1_loss, masked_l1_loss
 from metrics import FIDTracker
 from distributed import master_only, synchronize
@@ -327,7 +326,7 @@ class Trainer():
                         'Real Score': reduced_loss['real_score'],
                         'Fake Score': reduced_loss['fake_score'],
                     })
-                    
+
                 pbar.set_description(
                     "d: {d:.4f}; g: {g:.4f}; g_rec: {g_rec:.4f}; r1: {r1:.4f}; path: {path:.4f}; mean path: {mean_path:.4f}".format(**reduced_loss)
                 )
@@ -339,6 +338,8 @@ class Trainer():
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(prog='torch.distributed.launch')
     parser.add_argument('-c', '--cfg', help="path to the configuration file", metavar='PATH')
+    parser.add_argument('-o', '--out_dir', metavar='PATH',
+                        help="path to output directory. If not set, auto. set to subdirectory of OUT_DIR in configuration")
     parser.add_argument('--local_rank', type=int, default=0, metavar='INT', help='Automatically given by %(prog)s')
     parser.add_argument('--debug', action='store_true')
     parser.add_argument('--wandb', action='store_true')
@@ -359,13 +360,12 @@ if __name__ == '__main__':
         print = master_only(print)
         print("print function overriden")
 
-    args.out_dir = None
     if args.num_gpus == 1 or args.local_rank == 0:
         misc.prepare_training(args, cfg)
 
-    logger = misc.create_logger(args.out_dir, args.local_rank, args.debug)
+    logger = misc.create_logger(**vars(args))
 
-    logger.debug(pformat(cfg))
+    print(cfg)
     t = time()
     logger.info("initialize trainer...")
     trainer = Trainer(args, cfg, logger)
