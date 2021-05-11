@@ -1,16 +1,7 @@
-# ------------------------------------------------------------------------------
-# Copyright (c) Microsoft
-# Licensed under the MIT License.
-# Written by Bin Xiao (Bin.Xiao@microsoft.com)
-# Modified by Ke Sun (sunk@mail.ustc.edu.cn), Tianheng Cheng(tianhengcheng@gmail.com)
-# ------------------------------------------------------------------------------
-
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from yacs.config import CfgNode as CN
 
+
+_VALID_TYPES = {tuple, list, str, int, float, bool}
 
 _C = CN()
 _C.DESCRIPTION = ''
@@ -25,8 +16,8 @@ _C.DATASET.DATASET = 'MultiChannelDataset'
 _C.DATASET.ROOTS = ['/root/notebooks/data/mpii']
 _C.DATASET.SOURCE = ['images']
 _C.DATASET.CHANNELS = [3]
-_C.DATASET.MEAN = [0.5,0.5,0.5]
-_C.DATASET.STD = [0.5,0.5,0.5]
+_C.DATASET.MEAN = [0.5, 0.5, 0.5]
+_C.DATASET.STD = [0.5, 0.5, 0.5]
 _C.DATASET.LOAD_IN_MEM = False
 _C.DATASET.FLIP = True
 
@@ -63,13 +54,8 @@ _C.EVAL.FID.INCEPTION_CACHE = "inception_cache.pkl"
 _C.EVAL.FID.SAMPLE_DIR = ""
 
 
-def update_config(cfg, args):
-    cfg.defrost()
-    cfg.merge_from_file(args.cfg)
-    cfg.freeze()
-
-
-_VALID_TYPES = {tuple, list, str, int, float, bool}
+def get_cfg_defaults():
+    return _C.clone()
 
 
 def convert_to_dict(cfg_node, key_list=[]):
@@ -84,9 +70,3 @@ def convert_to_dict(cfg_node, key_list=[]):
         for k, v in cfg_dict.items():
             cfg_dict[k] = convert_to_dict(v, key_list + [k])
         return cfg_dict
-    
-
-if __name__ == '__main__':
-    import sys
-    with open(sys.argv[1], 'w') as f:
-        print(_C, file=f)

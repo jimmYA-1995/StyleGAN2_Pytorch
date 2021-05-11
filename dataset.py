@@ -125,7 +125,6 @@ class MultiChannelDataset(data.Dataset):
         
             self.img_paths.extend(list((root / sources[0]).glob('*.jpg')))
         
-        
         self.length = len(self.img_paths)
         if self.flip:
             self.length *= 2
@@ -135,13 +134,13 @@ class MultiChannelDataset(data.Dataset):
             self.data, self.labels = [], []
             for index in tqdm(range(self.length)):
                 path = self.img_paths[index % (self.length // 2)]
-                target = None # unconditional for now
+                target = None  # unconditional for now
                 flip = index >= (self.length // 2)
                 concat_img = self.loader(path, flip=flip)
                 if self.transform is not None:
                     concat_img = self.transform(concat_img)
-                #if self.target_transform is not None:
-                #    target = self.target_transform(target)
+                # if self.target_transform is not None:
+                #     target = self.target_transform(target)
                 self.data.append(concat_img)
                 self.labels.append(target)
         
