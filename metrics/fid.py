@@ -46,46 +46,44 @@ def load_condition_sample(sample_dir, batch_size):
 
 class FIDTracker():
     def __init__(self, cfg, output_dir, use_tqdm=False):
-
         fid_cfg = cfg.EVAL.FID
         inception_path = fid_cfg.INCEPTION_CACHE
 
         self.device = 'cuda'
         self.cfg = fid_cfg
-        self.logger = logging.getLogger()
+        self.log = logging.getLogger()
         self.output_path = Path(output_dir)
         if not self.output_path.exists():
             self.output_path.mkdir(parents=True)
-        self.latent_size = cfg.MODEL.LATENT_SIZE
-        self.k_iters = []
         self.real_mean = None  # ndarray(n_class, 2048) float32
         self.real_cov = None  # ndarray(n_class, 2048, 2048) float64
+        self.k_iters = []
         self.fids = []
+        self.cond_samples = None
+        self.latent_size = cfg.MODEL.LATENT_SIZE
         self.conditional = True if cfg.N_CLASSES > 1 else False
         self.num_classes = cfg.N_CLASSES
-        self.cond_samples = None
+        self.model_bs = cfg.N_SAMPLE
         self.n_batch = fid_cfg.N_SAMPLE // fid_cfg.BATCH_SIZE
         self.resid = fid_cfg.N_SAMPLE % fid_cfg.BATCH_SIZE
         self.idx_iterator = range(self.n_batch + 1)
         self.use_tqdm = use_tqdm
-        self.model_bs = cfg.N_SAMPLE
         if fid_cfg.SAMPLE_DIR:
             self.cond_samples = load_condition_sample(fid_cfg.SAMPLE_DIR, self.model_bs)
             self.cond_samples = self.cond_samples.to(self.device)
-            self.logger.info(f"using smaple directory: {fid_cfg.SAMPLE_DIR}. \
-                                Get {self.cond_samples.shape[0]} conditional sample")
+            self.log.info(f"using smaple directory: {fid_cfg.SAMPLE_DIR}."
+                          f"Get {self.cond_samples.shape[0]} conditional sample")
             self.model_bs = self.cond_samples.shape[0]
 
         # get inception V3 model
         start = time.time()
-        self.logger.info("load inception model...")
-        self.inceptionV3 = torch.nn.DataParallel(load_patched_inception_v3()).to(self.device)
-        self.inceptionV3.eval()
-        self.logger.info("load inception model complete ({:.2f})".format(time.time() - start))
+        self.log.info("load inception model...")
+        self.inceptionV3 = torch.nn.DataParallel(load_patched_inception_v3()).eval().to(self.device)
+        self.log.info("load inception model complete ({:.2f})".format(time.time() - start))
 
         # get features for real images
         if inception_path:
-            self.logger.info("load inception from cache file")
+            self.log.info("load inception from cache file")
             with open(inception_path, 'rb') as f:
                 embeds = pickle.load(f)
                 self.real_mean = embeds['mean']
@@ -93,14 +91,14 @@ class FIDTracker():
                 self.idx_to_class = embeds['idx_to_class']
         else:
             self.real_mean, self.real_cov, self.idx_to_class = self.extract_feature_from_real_images(cfg)
-            self.logger.info(f"save inception cache in {self.output_path}")
+            self.log.info(f"save inception cache in {self.output_path}")
             with open(self.output_path / 'inception_cache.pkl', 'wb') as f:
                 pickle.dump(dict(mean=self.real_mean, cov=self.real_cov, idx_to_class=self.idx_to_class), f)
 
         self.val_loader = get_dataloader(cfg, self.model_bs, n_workers=1, split='val')
 
     def calc_fid(self, generator, k_iter, save=False, eps=1e-6):
-        self.logger.info(f'get fid on {k_iter * 1000} iterations')
+        self.log.info(f'get fid on {k_iter * 1000} iterations')
         start = time.time()
         sample_features = self.extract_feature_from_model(generator)
 
@@ -112,7 +110,7 @@ class FIDTracker():
             cov_sqrt, _ = linalg.sqrtm(sample_cov @ self.real_cov[i], disp=False)
 
             if not np.isfinite(cov_sqrt).all():
-                self.logger.warning('product of cov matrices is singular')
+                self.log.warning('product of cov matrices is singular')
                 offset = np.eye(sample_cov.shape[0]) * eps
                 cov_sqrt = linalg.sqrtm((sample_cov + offset) @ (self.real_cov[i] + offset))
 
@@ -131,7 +129,7 @@ class FIDTracker():
             fids.append(mean_norm + trace)
 
         finish = time.time()
-        self.logger.info(f'FID in {str(1000 * k_iter).zfill(6)} \
+        self.log.info(f'FID in {str(1000 * k_iter).zfill(6)} \
              iterations: "{fids}". [costs {round(finish - start, 2)} sec(s)]')
         self.k_iters.append(k_iter)
         self.fids.append(fids)
@@ -156,7 +154,7 @@ class FIDTracker():
         real_cov_list = []
 
         for i, dataloader in enumerate(dataloaders):
-            self.logger.info(f'extract features from real "{idx_to_class[i]}" images...')
+            self.log.info(f'extract features from real "{idx_to_class[i]}" images...')
             features = []
             loader = sample_data(dataloader)
 
@@ -178,7 +176,7 @@ class FIDTracker():
             real_mean_list.append(real_mean)
             real_cov_list.append(real_cov)
 
-            self.logger.info(f"complete({round(time.time() - start, 2)} secs). \
+            self.log.info(f"complete({round(time.time() - start, 2)} secs). \
                                total extracted features: {features.shape[0]}")
 
         return real_mean_list, real_cov_list, idx_to_class
@@ -217,7 +215,7 @@ class FIDTracker():
         return features_list
 
     def plot_fid(self):
-        self.logger.info(f"save FID figure in {str(self.output_path / 'fid.png')}")
+        self.log.info(f"save FID figure in {str(self.output_path / 'fid.png')}")
 
         self.fids = np.array(self.fids).T
         plt.xlabel('k iterations')

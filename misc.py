@@ -59,10 +59,6 @@ def create_logger(local_rank, out_dir=None, debug=False, **kwargs):
     return logger
 
 
-# def validate_configuration(args, cfg):
-#     assert self.num_classes >= 1
-
-
 def prepare_training(args, cfg):
     """ populate necessary directories """
     if not args.out_dir:

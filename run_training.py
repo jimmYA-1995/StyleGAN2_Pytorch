@@ -5,7 +5,6 @@ import random
 import argparse
 from time import time
 from pathlib import Path
-from pprint import pformat
 from collections import OrderedDict
 
 import wandb
@@ -17,11 +16,10 @@ from torchvision import utils
 
 import misc
 from config import get_cfg_defaults, convert_to_dict
-from dataset import get_dataset, get_dataloader
+from dataset import get_dataloader
 from models import Generator, Discriminator
 from losses import nonsaturating_loss, path_regularize, logistic_loss, d_r1_loss, masked_l1_loss
 from metrics import FIDTracker
-from distributed import master_only, synchronize
 
 
 def requires_grad(model, flag=True):
@@ -145,7 +143,6 @@ class Trainer():
         # init. FID tracker if needed.
         if 'fid' in self.metrics and args.local_rank == 0:
             self.fid_tracker = FIDTracker(cfg, self.out_dir, use_tqdm=True)
-        # synchronize()
 
     def train(self):
         cfg_d = self.cfg.DATASET
@@ -355,10 +352,9 @@ if __name__ == '__main__':
         torch.cuda.set_device(args.local_rank)
         torch.distributed.init_process_group(
             backend='nccl', init_method='env://', rank=args.local_rank, world_size=args.num_gpus)
-        synchronize()
 
-        print = master_only(print)
-        print("print function overriden")
+        assert torch.distributed.is_available() and torch.distributed.is_initialized()
+        torch.distributed.barrier()
 
     if args.num_gpus == 1 or args.local_rank == 0:
         misc.prepare_training(args, cfg)
