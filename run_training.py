@@ -19,7 +19,7 @@ from config import get_cfg_defaults, convert_to_dict
 from dataset import get_dataloader
 from models import Generator, Discriminator
 from losses import nonsaturating_loss, path_regularize, logistic_loss, d_r1_loss, masked_l1_loss
-from metrics import FIDTracker
+from metrics.fid import FIDTracker
 
 
 def requires_grad(model, flag=True):

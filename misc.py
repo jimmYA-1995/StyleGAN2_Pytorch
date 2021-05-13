@@ -30,6 +30,8 @@ class CustomFormatter(logging.Formatter):
 
 
 def create_logger(local_rank, out_dir=None, debug=False, **kwargs):
+    if out_dir is not None and not isinstance(out_dir, Path):
+        out_dir = Path(out_dir)
     logger_name = f"GPU{local_rank}"
     loglevel = 'DEBUG' if debug else ('INFO' if local_rank == 0 else 'WARN')
 

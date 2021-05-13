@@ -14,7 +14,7 @@ from scipy import linalg
 from tqdm import tqdm
 
 from dataset import get_dataloader_for_each_class
-from calc_inception import load_patched_inception_v3
+from .calc_inception import load_patched_inception_v3
 
 def sample_data(loader):
     while True:
