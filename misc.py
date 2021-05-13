@@ -1,99 +1,82 @@
 import os
-import time
-import shutil
 import logging
-import argparse
 from pathlib import Path
-
-from pprint import pprint
 
 
 class CustomFormatter(logging.Formatter):
     """ Logging Formatter  to add colors and count warning / errors"""
-    
-    gray = "\x1b[38;21m"
-    green = "\x1b[32;21m"
-    yellow = "\x1b[33;21m"
-    red = "\x1b[31;21m"
-    bold_red = "\x1b[31;1m"
-    reset = "\x1b[0m"
-    format = "<MASTER> %(levelname)-8s - %(asctime)-15s - %(message)s (%(filename)s:%(lineno)d)"
-    
-    FORMATS = {
-        'DEBUG': gray + format + reset,
-        'INFO': green + format + reset,
-        'WARNING': yellow + format + reset,
-        'ERROR': red + format + reset,
-        'CRITICAL': bold_red + format + reset,
-    }
-    
+    def __init__(self, name):
+        gray     = "\x1b[38;21m"
+        green    = "\x1b[32;21m"
+        yellow   = "\x1b[33;21m"
+        red      = "\x1b[31;21m"
+        bold_red = "\x1b[31;1m"
+        reset    = "\x1b[0m"
+        format   = f"<{name}> %(message)s (%(filename)s:%(lineno)d)"
+
+        self.FORMATS = {
+            'DEBUG': gray + format + reset,
+            'INFO': green + format + reset,
+            'WARNING': yellow + format + reset,
+            'ERROR': red + format + reset,
+            'CRITICAL': bold_red + format + reset,
+        }
+        super(CustomFormatter, self).__init__()
+
     def format(self, record):
         log_fmt = self.FORMATS[record.levelname]
         formatter = logging.Formatter(log_fmt)
         return formatter.format(record)
 
-def parse_args(arg=None):
-    parser = argparse.ArgumentParser(description='arguments')
-    parser.add_argument("--debug", action='store_true', default=False, help="whether to use debug mode")
-    parser.add_argument("--cfg", default='experiments/default-cfg.py', help="path to the configuration file")
-    parser.add_argument('--local_rank', type=int, default=0)
-    parser.add_argument('--local', action='store_true')
-    parser.add_argument('--wandb', action='store_true')
-    
-    if arg:
-        args, _ = parser.parse_known_args(arg.split())
-    else:
-        args, _ = parser.parse_known_args()
 
-    return args
+def create_logger(local_rank, out_dir=None, debug=False, **kwargs):
+    if out_dir is not None and not isinstance(out_dir, Path):
+        out_dir = Path(out_dir)
+    logger_name = f"GPU{local_rank}"
+    loglevel = 'DEBUG' if debug else ('INFO' if local_rank == 0 else 'WARN')
 
-def create_logger(out_dir, level='INFO'):
-    log_file = out_dir / 'experiment.log'
-    head = "%(levelname)-8s - %(asctime)-15s - %(message)s (%(filename)s:%(lineno)d)"
-    logging.basicConfig(filename=str(log_file),
-                       format=head,
-                       level=logging.DEBUG)
-    logger = logging.getLogger()
-    
-    print(f"level: {level}")
-    console = logging.StreamHandler()
-    console.setLevel(getattr(logging, level, 'INFO'))
-    console.setFormatter(CustomFormatter())
-    logger.addHandler(console)
+    logger = logging.getLogger(logger_name)
+    logger.propagate = False
+    logger.setLevel(getattr(logging, loglevel))
+    ch = logging.StreamHandler()
+    ch.setLevel(getattr(logging, loglevel))
+    ch.setFormatter(CustomFormatter(logger_name))
+    logger.addHandler(ch)
+
+    # disable PIL dubug mode
+    pil_logger = logging.getLogger('PIL')
+    pil_logger.setLevel(logging.INFO)
+
+    if local_rank == 0 and out_dir:
+        # TODO: logging to a single file from multiple processes
+        # https://docs.python.org/3/howto/logging-cookbook.html#logging-to-a-single-file-from-multiple-processes
+        assert out_dir is not None
+        filename = out_dir / 'experiment.log'
+        head = "%(levelname)-8s - %(asctime)-15s - %(message)s (%(filename)s:%(lineno)d)"
+        fh = logging.FileHandler(filename)
+        fh.setLevel(getattr(logging, loglevel))
+        fh.setFormatter(logging.Formatter(head))
+        logger.addHandler(fh)
 
     return logger
 
 
-def prepare_training(cfg, cfg_path, debug=False):
-    """
-    ?? how to control logger in multi-processing
-    """
-    root_out_dir = Path(cfg.OUT_DIR)
-    if not root_out_dir.exists():
-        print('creating {}'.format(root_out_dir))
-        root_out_dir.mkdir(parents=True)
-    
-    # create run directory
-    run_id = '00000'
-    cfg_name = os.path.basename(cfg_path).split('.')[0]
-    ids = [int(str(x).split('/')[-1][:5]) for x in root_out_dir.glob("[0-9][0-9][0-9][0-9][0-9]-*")]
-    if len(ids) > 0:
-        run_id = str(sorted(ids)[-1] + 1).zfill(5)
-    
-    final_out_dir = root_out_dir / f'{run_id}-{len(os.environ["CUDA_VISIBLE_DEVICES"])}gpu-{cfg_name}'
-    final_out_dir.mkdir()
-    
-    # out of expectation
-    shutil.copyfile(cfg_path, final_out_dir / 'configuration.yml')
-    
-    (final_out_dir / 'checkpoints').mkdir()
-    (final_out_dir / 'samples').mkdir()
-    
-    loglevel = 'DEBUG' if debug else 'INFO'
-    logger = create_logger(final_out_dir, loglevel)
-    
-    return logger, final_out_dir
+def prepare_training(args, cfg):
+    """ populate necessary directories """
+    if not args.out_dir:
+        root_dir = Path(cfg.OUT_DIR)
+        if not root_dir.exists():
+            print('creating {}'.format(root_dir))
+            root_dir.mkdir(parents=True)
 
-    
-    
-    
+        cfg_name = os.path.basename(args.cfg).split('.')[0] if args.cfg else 'default'
+        exist_IDs = [int(x.name[:5])
+                     for x in root_dir.glob("[0-9][0-9][0-9][0-9][0-9]-*")
+                     if x.is_dir()]
+        exp_ID = max(exist_IDs) + 1 if exist_IDs else 0
+        exp_ID = str(exp_ID).zfill(5)
+
+        args.out_dir = root_dir / f'{exp_ID}-{args.num_gpus}gpu-{cfg_name}'
+
+    (args.out_dir / 'checkpoints').mkdir(parents=True)
+    (args.out_dir / 'samples').mkdir(parents=True)
