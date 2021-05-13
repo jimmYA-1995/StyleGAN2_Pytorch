@@ -13,10 +13,10 @@ from torchvision.datasets import ImageFolder
 
 ALLOW_EXTS = ['jpg', 'jpeg', 'png', 'JPEG']
 
+
 class MultiResolutionDataset(data.Dataset):
     def __init__(self, config, resolution, transform=None):
         path = config.ROOTS[0]
-        
         self.env = lmdb.open(
             path,
             max_readers=32,
@@ -51,20 +51,19 @@ class MultiResolutionDataset(data.Dataset):
 
 
 def ImageFolderDataset(config, resolution, transform=None):
-    path = config.ROOTS[0]
     def image_loader(path):
-        try:
-            img = Image.open(path)
-            img = img.resize((resolution, resolution), Image.ANTIALIAS)
-            if img.mode == 'L':
-                img = img.convert('RGB')
-            return img
-        except:
-            print(f'fail to load the image: {path}')
-            return None
-        
-    check_valid = lambda img: True if img is not None else False
-    return ImageFolder(path, transform=transform, loader=image_loader, is_valid_file=check_valid)
+        img = Image.open(path)
+        img = img.resize((resolution, resolution), Image.ANTIALIAS)
+        if img.mode == 'L':
+            img = img.convert('RGB')
+        return img
+
+    def check_valid(img):
+        if img is not None:
+            return True
+        return False
+
+    return ImageFolder(config.ROOTS[0], transform=transform, loader=image_loader, is_valid_file=check_valid)
 
 
 def load_images_and_concat(path, resolution, sources, channel_info=None, flip=False):
@@ -80,7 +79,7 @@ def load_images_and_concat(path, resolution, sources, channel_info=None, flip=Fa
             img = Image.open(path).resize((resolution, resolution), Image.ANTIALIAS)
             if flip:
                 img = img.transpose(Image.FLIP_LEFT_RIGHT)
-                
+
             img = np.array(img)
             if img.ndim == 2:
                 img = img[..., None]
@@ -89,65 +88,64 @@ def load_images_and_concat(path, resolution, sources, channel_info=None, flip=Fa
             imgs.append(img)
     except:
         raise RuntimeError(f'fail to load the image: {path}')
-    
+
     cat_images = np.concatenate(imgs, axis=-1)
-       
+
     return cat_images
 
 
 class MultiChannelDataset(data.Dataset):
-    """ This dataset concatenate the source images with other 
-        information images like skeletons or masks.
-    
+    """
+    This dataset concatenate the source images with other
+    information images like skeletons or masks.
     """
     def __init__(self, config, resolution, transform=None, **kwargs):
         from torchvision import get_image_backend
         assert get_image_backend() == 'PIL'
         assert len(config.SOURCE) == len(config.CHANNELS), \
-                f"the numbers of sources and channels don't match."
-        
+            f"the numbers of sources and channels don't match."
+
         self.roots = config.ROOTS
         self.transform = transform
-        self.target_transform = None ##
+        self.target_transform = None
         self.loader = partial(load_images_and_concat,
                               resolution=resolution,
                               sources=config.SOURCE,
                               channel_info=config.CHANNELS)
         self.load_in_mem = config.LOAD_IN_MEM
         self.flip = config.FLIP
-      
+
         sources = config.SOURCE
         self.img_paths = []
         for root in self.roots:
             root = Path(root)
             for src in sources:
                 assert (root / src).is_dir(), f'source directory {src} is not in root path: {root}'
-        
+
             self.img_paths.extend(list((root / sources[0]).glob('*.jpg')))
-        
-        
+
         self.length = len(self.img_paths)
         if self.flip:
             self.length *= 2
-        
+
         if self.load_in_mem:
             print('Loading all images into memory...')
             self.data, self.labels = [], []
             for index in tqdm(range(self.length)):
                 path = self.img_paths[index % (self.length // 2)]
-                target = None # unconditional for now
+                target = None  # unconditional for now
                 flip = index >= (self.length // 2)
                 concat_img = self.loader(path, flip=flip)
                 if self.transform is not None:
                     concat_img = self.transform(concat_img)
-                #if self.target_transform is not None:
-                #    target = self.target_transform(target)
+                # if self.target_transform is not None:
+                #     target = self.target_transform(target)
                 self.data.append(concat_img)
                 self.labels.append(target)
-        
+
     def __len__(self):
         return self.length
-    
+
     def __getitem__(self, index):
         if self.load_in_mem:
             concat_img = self.data[index]
@@ -157,14 +155,14 @@ class MultiChannelDataset(data.Dataset):
             flip = index >= (self.length // 2)
             concat_img = self.loader(path, flip=flip)
             target = 0
-            
+
             if self.transform is not None:
                 concat_img = self.transform(concat_img)
-                
+
             if self.target_transform is not None:
-                target = self.target_transform(target) 
-            
-        return concat_img, target  
+                target = self.target_transform(target)
+
+        return concat_img, target
 
     def __repr__(self):
         fmt_str = 'Dataset ' + self.__class__.__name__ + '\n'
@@ -185,7 +183,6 @@ class GenericDataset(data.Dataset):
         self.config = config
         self.resolution = resolution
         self.transform = transform
-        
 
     def __len__(self):
         return len(self.paths)
@@ -223,7 +220,7 @@ class DeepFashionDataset(GenericDataset):
         if self.transform is not None:
             imgA = self.transform(imgA.copy())
             imgB = self.transform(imgB.copy())
-        
+
         if mask is not None:
             mask = mask[h1:h2, load_size + w1:load_size + w2, :]
             # Gaussian blur
@@ -243,11 +240,11 @@ def data_sampler(dataset, shuffle, distributed):
 
     if shuffle:
         return data.RandomSampler(dataset)
-    else:
-        return data.SequentialSampler(dataset)
+
+    return data.SequentialSampler(dataset)
+
 
 def get_dataset(config, resolution, split='train'):
-    # config.DATASET
     trf = [
         transforms.ToTensor(),
         transforms.Normalize(config.MEAN, config.STD, inplace=True),
@@ -256,12 +253,13 @@ def get_dataset(config, resolution, split='train'):
     Dataset = globals().get(config.DATASET)
     dataset = Dataset(config, resolution, transform=transform, split=split)
     return dataset
-    
+
+
 def get_dataloader(config, batch_size, n_workers=None, split='train', distributed=False):
     dataset = get_dataset(config.DATASET, config.RESOLUTION, split=split)
     if n_workers is None:
         n_workers = config.DATASET.WORKERS
-    
+
     loader = data.DataLoader(
         dataset,
         batch_size=batch_size,
@@ -270,6 +268,7 @@ def get_dataloader(config, batch_size, n_workers=None, split='train', distribute
         drop_last=True,
     )
     return loader
+
 
 def get_dataloader_for_each_class(config, batch_size, distributed=False):
     dataset = get_dataset(config.DATASET, config.RESOLUTION)
@@ -280,7 +279,7 @@ def get_dataloader_for_each_class(config, batch_size, distributed=False):
     for i, (label_class, idx) in enumerate(dataset.class_to_idx.items(), 1):
         for ext in ALLOW_EXTS:
             cur_idx += len(list((data_root / label_class).glob(f'*.{ext}')))
-        
+
         loader = data.DataLoader(
             dataset,
             batch_size=batch_size,
@@ -290,11 +289,6 @@ def get_dataloader_for_each_class(config, batch_size, distributed=False):
         )
         dataloaders.append(loader)
         last_idx = cur_idx
-        idx_to_class = {v: k for k,v in dataset.class_to_idx.items()}
-        
+        idx_to_class = {v: k for k, v in dataset.class_to_idx.items()}
+
     return dataloaders, idx_to_class
-
-
-if __name__ == "__main__":
-    # test code
-    pass
