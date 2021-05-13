@@ -470,19 +470,19 @@ class G_synthesis_stylegan2(nn.Module):
         self,
         num_layers,
         resolution_log2,
-        dlatent_size        = 512,          # Disentangled latent (W) dimensionality.
-        num_channels        = 3,            # Number of output color channels.
-        kernel              = 3,
-        fmap_base           = 16 << 10,     # Overall multiplier for the number of feature maps.
-        fmap_decay          = 1.0,          # log2 feature map reduction when doubling the resolution.
-        fmap_min            = 1,            # Minimum number of feature maps in any layer.
-        fmap_max            = 512,          # Maximum number of feature maps in any layer.
-        randomize_noise     = True,         # True = randomize noise inputs every time (non-deterministic), False = read noise inputs from variables.
-        architecture        = 'skip',       # Architecture: 'orig', 'skip', 'resnet'.
-        nonlinearity        = 'lrelu',      # Activation function: 'relu', 'lrelu', etc.
-        resample_kernel     = [1, 3, 3, 1], # Low-pass filter to apply when resampling activations. None = no filtering.
-        **_kwargs,                          # Ignore unrecognized keyword args.)
-    ): 
+        dlatent_size=512,            # Disentangled latent (W) dimensionality.
+        num_channels=3,              # Number of output color channels.
+        kernel=3,
+        fmap_base=16 << 10,          # Overall multiplier for the number of feature maps.
+        fmap_decay=1.0,              # log2 feature map reduction when doubling the resolution.
+        fmap_min=1,                  # Minimum number of feature maps in any layer.
+        fmap_max=512,                # Maximum number of feature maps in any layer.
+        randomize_noise=True,        # True = randomize noise inputs every time (non-deterministic), False = read noise inputs from variables.
+        architecture='skip',         # Architecture: 'orig', 'skip', 'resnet'.
+        nonlinearity='lrelu',        # Activation function: 'relu', 'lrelu', etc.
+        resample_kernel=[1, 3, 3, 1],  # Low-pass filter to apply when resampling activations. None = no filtering.
+        **_kwargs,                     # Ignore unrecognized keyword args.)
+    ):
 
         super(G_synthesis_stylegan2, self).__init__()
         self.resolution_log2 = resolution_log2
@@ -556,15 +556,15 @@ class G_synthesis_stylegan2(nn.Module):
 class G_mapping(nn.Module):
     def __init__(
         self,
-        latent_size             = 512,          # Latent vector (Z) dimensionality.
-        label_size              = 0,            # Label dimensionality, 0 if no labels.
-        embedding_size          = 0,
-        dlatent_size            = 512,          # Disentangled latent (W) dimensionality.
-        mapping_layers          = 8,            # Number of mapping layers.
-        mapping_fmaps           = 512,          # Number of activations in the mapping layers.
-        mapping_lrmul           = 0.01,         # Learning rate multiplier for the mapping layers.
-        normalize_latents       = True,         # Normalize latent vectors (Z) before feeding them to the mapping layers?
-        **_kwargs                               # Ignore unrecognized keyword args.
+        latent_size=512,         # Latent vector (Z) dimensionality.
+        label_size=0,            # Label dimensionality, 0 if no labels.
+        embedding_size=0,
+        dlatent_size=512,        # Disentangled latent (W) dimensionality.
+        mapping_layers=8,        # Number of mapping layers.
+        mapping_fmaps=512,       # Number of activations in the mapping layers.
+        mapping_lrmul=0.01,      # Learning rate multiplier for the mapping layers.
+        normalize_latents=True,  # Normalize latent vectors (Z) before feeding them to the mapping layers?
+        **_kwargs                # Ignore unrecognized keyword args.
     ):
         super(G_mapping, self).__init__()
         assert isinstance(label_size, int) and label_size >= 0
