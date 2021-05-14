@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import copy
+import json
 import pickle
 import logging
 from pathlib import Path
@@ -144,14 +145,24 @@ class FIDTracker():
             fids.append(mean_norm + trace)
 
         finish = time.time()
+        total_time = finish - start
         self.log.info(f'FID in {str(1000 * k_iter).zfill(6)} \
-             iterations: "{fids}". [costs {round(finish - start, 2)} sec(s)]')
+             iterations: "{fids}". [costs {round(total_time - start, 2)} sec(s)]')
         self.k_iters.append(k_iter)
         self.fids.append(fids)
 
-        if save:
+        if self.rank == 0 and save:
             with open(self.out_dir / 'fid.txt', 'a+') as f:
                 f.write(f'{k_iter}: {fids}\n')
+            result_dict = {"results": {"fid50k_full": fids[0]},
+                           "metric": "fid50k_full",
+                           "total_time": total_time,
+                           "total_time_str": f"{total_time // 60}m {total_time % 60}s",
+                           "num_gpus": self.num_gpus,
+                           "snapshot_pkl": "none",
+                           "timestamp": time.time()}
+            with open(self.out_dir / 'metric-fid50k_full.jsonl', 'at') as f:
+                f.write(json.dumps(result_dict) + '\n')
 
         return fids
 
