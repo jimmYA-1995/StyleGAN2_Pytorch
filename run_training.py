@@ -141,8 +141,8 @@ class Trainer():
             )
 
         # init. FID tracker if needed.
-        if 'fid' in self.metrics and args.local_rank == 0:
-            self.fid_tracker = FIDTracker(cfg, self.out_dir, use_tqdm=True)
+        if 'fid' in self.metrics:
+            self.fid_tracker = FIDTracker(cfg, self.local_rank, self.num_gpus, self.out_dir, use_tqdm=(self.local_rank == 0))
 
     def train(self):
         cfg_d = self.cfg.DATASET
@@ -217,7 +217,7 @@ class Trainer():
             fake_img, _ = self.g(noise, labels_in=fake_label, style_in=face_imgs, content_in=masked_body)
             fake_pred = self.d(fake_img)
             g_loss = nonsaturating_loss(fake_pred)
-            g_rec_loss = masked_l1_loss(masked_body, fake_img, mask=blur_mask) * self.cfg.RESOLUTION ** 2
+            g_rec_loss = masked_l1_loss(body_imgs, fake_img, mask=blur_mask) * self.cfg.RESOLUTION ** 2
             loss_dict['g'] = g_loss
             loss_dict['g_rec'] = g_rec_loss
 
@@ -250,7 +250,7 @@ class Trainer():
 
             accumulate(self.g_ema, g_module, ema_beta)
 
-            if (self.local_rank == 0 and i != 0 and (i + 1) % self.cfg.EVAL.FID.EVERY == 0):
+            if i == 0 or (i + 1) % self.cfg.EVAL.FID.EVERY == 0:
                 k_iter = (i + 1) / 1000
                 self.g_ema.eval()
                 self.fid_tracker.calc_fid(self.g_ema, k_iter, save=True)
