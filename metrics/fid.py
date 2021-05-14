@@ -212,7 +212,6 @@ class FIDTracker():
             self.log.info(f"complete({round(time.time() - start, 2)} secs)."
                           f"total extracted features: {features.shape[0]}")
 
-
     @torch.no_grad()
     def extract_feature_from_model(self, generator):
         num_sample = self.cfg.N_SAMPLE // self.num_gpus
@@ -344,12 +343,3 @@ if __name__ == '__main__':
         else:
             torch.multiprocessing.spawn(fn=subprocess_fn, args=(args, cfg, temp_dir), nprocs=args.num_gpus)
 
-    # logger.info(f"Get FID of the following {len(ckpts)} ckpt files: {[str(ckpt) for ckpt in ckpts]}")
-
-
-
-        # if args.truncation < 1:
-        #     with torch.no_grad():
-        #         mean_latent = g.mean_latent(args.truncation_mean)
-        # else:
-        #     mean_latent = None

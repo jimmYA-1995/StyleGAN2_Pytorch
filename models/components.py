@@ -27,8 +27,8 @@ def make_kernel(k):
 
 
 def get_weight(shape, gain=1, use_wscale=True, lrmul=1):
-    fan_in = np.prod(shape[1:]) # [fmaps_out, fmaps_in, kernel, kernel] or [out, in]
-    he_std = gain / np.sqrt(fan_in) # He init
+    fan_in = np.prod(shape[1:])  # [fmaps_out, fmaps_in, kernel, kernel] or [out, in]
+    he_std = gain / np.sqrt(fan_in)  # He init
 
     # Equalized learning rate and custom learning rate multiplier.
     if use_wscale:
@@ -504,8 +504,10 @@ class G_synthesis_stylegan2(nn.Module):
                 self.register_buffer(f'noise_{layer_idx}', torch.randn(*shape))
 
         # 4x4
+        face_style_dim = int(nf(1) // 2)
+        dlatent_size += face_style_dim
         self.input = Parameter(torch.randn((1, nf(1) // 2, 4, 4)))
-        self.style_encoder = style_encoder(resolution_log2, 2, 3, nf(1) // 2)
+        self.style_encoder = style_encoder(resolution_log2, 2, 3, face_style_dim)
         self.ContentEncoder = ContentEncoder(resolution_log2, 2, 4, nf(1) // 2)
         self.bottom_layer = Layer(nf(1), nf(1), use_modulate=True, dlatents_dim=dlatent_size, kernel=kernel, resample_kernel=resample_kernel)
         self.trgbs.append(ToRGB(nf(1), num_channels, dlatent_size))

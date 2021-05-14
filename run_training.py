@@ -89,7 +89,7 @@ class Trainer():
             label_size,
             cfg.RESOLUTION,
             embedding_size=cfg.MODEL.EMBEDDING_SIZE,
-            dlatents_size=256,
+            dlatents_size=512,
             extra_channels=cfg.MODEL.EXTRA_CHANNEL,
             is_training=True
         ).to(self.device)
