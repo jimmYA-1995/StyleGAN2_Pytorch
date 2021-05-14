@@ -70,10 +70,7 @@ class FIDTracker():
         self.latent_size = cfg.MODEL.LATENT_SIZE
         self.conditional = True if cfg.N_CLASSES > 1 else False
         self.num_classes = cfg.N_CLASSES
-        self.model_bs = cfg.N_SAMPLE
-        self.n_batch = fid_cfg.N_SAMPLE // fid_cfg.BATCH_SIZE
-        self.resid = fid_cfg.N_SAMPLE % fid_cfg.BATCH_SIZE
-        self.idx_iterator = range(self.n_batch + 1)
+        self.model_bs = 8
         self.use_tqdm = use_tqdm
         if fid_cfg.SAMPLE_DIR:
             self.cond_samples = load_condition_sample(fid_cfg.SAMPLE_DIR, self.model_bs)
