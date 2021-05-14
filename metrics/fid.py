@@ -154,7 +154,7 @@ class FIDTracker():
             result_dict = {"results": {"fid50k_full": fids[0]},
                            "metric": "fid50k_full",
                            "total_time": total_time,
-                           "total_time_str": f"{total_time // 60}m {total_time % 60}s",
+                           "total_time_str": f"{int(total_time // 60)}m {int(total_time % 60)}s",
                            "num_gpus": self.num_gpus,
                            "snapshot_pkl": "none",
                            "timestamp": time.time()}
