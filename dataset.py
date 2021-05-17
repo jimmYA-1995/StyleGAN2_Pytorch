@@ -1,11 +1,11 @@
-import sys
 from io import BytesIO
 from pathlib import Path
 from functools import partial
 from tqdm import tqdm
 import lmdb
+import torch
 import numpy as np
-from PIL import Image, ImageFilter
+from PIL import Image
 from torch.utils import data
 from torchvision import transforms
 from torchvision.datasets import ImageFolder
@@ -199,21 +199,20 @@ class DeepFashionDataset(GenericDataset):
     def __getitem__(self, idx):
         cfg = self.config
         load_size = self.resolution + 30
+        h1 = w1 = (load_size - self.resolution) // 2
+        h2 = w2 = (load_size + self.resolution) // 2
+
         img = Image.open(self.paths[idx])
-        cfg_ch = cfg.CHANNELS[0]
-        assert (img.mode == 'RGBA' and cfg_ch == 4) ^ (img.mode == 'RGB' and cfg_ch == 3), \
+        assert (img.mode == 'RGBA' and cfg.CHANNELS[0] == 4) ^ (img.mode == 'RGB' and cfg.CHANNELS[0] == 3), \
             "image channel is not consistent, please check your config"
 
+        img_np = np.asarray(img.convert('RGB').resize((load_size * 2, load_size), Image.ANTIALIAS))
         mask = None
         if img.mode == 'RGBA':
-            mask = img.resize((load_size * 2, load_size), Image.ANTIALIAS)
-            mask = np.asarray(mask)[..., -1:]
-        img = img.convert('RGB').resize((load_size * 2, load_size), Image.ANTIALIAS)
-        img_np = np.asarray(img)
+            mask = img.split()[-1].resize((load_size * 2, load_size), Image.NEAREST)
+            mask_np = np.asarray(mask)[..., None]
+            img_np = np.concatenate([img_np, mask_np], axis=-1)
 
-        w1 = (load_size - self.resolution) // 2
-        w2 = (load_size + self.resolution) // 2
-        h1, h2 = w1, w2
         imgA = img_np[h1:h2, w1:w2, :]
         imgB = img_np[h1:h2, load_size + w1:load_size + w2, :]
 
@@ -222,15 +221,9 @@ class DeepFashionDataset(GenericDataset):
             imgB = self.transform(imgB.copy())
 
         if mask is not None:
-            mask = mask[h1:h2, load_size + w1:load_size + w2, :]
-            # Gaussian blur
-            # https://discuss.pytorch.org/t/is-there-anyway-to-do-gaussian-filtering-for-an-image-2d-3d-in-pytorch/12351/10
-            kernel = np.random.uniform(3, 3)
-            blur = np.asarray(Image.fromarray(mask[..., 0], mode='L').filter(ImageFilter.GaussianBlur(kernel)))[..., None]
-            blur = np.where(mask == 0, 0, blur)
-            masks = np.concatenate((mask, blur), axis=-1)
-            masks = transforms.ToTensor()(masks.copy())
-            return imgB, imgA, masks
+            imgA = imgA[:3, :, :]
+            imgB, mask = torch.split(imgB, 3, dim=0)
+            return imgB, imgA, mask
         return imgB, imgA
 
 
