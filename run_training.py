@@ -18,7 +18,7 @@ import misc
 from config import get_cfg_defaults, convert_to_dict
 from dataset import get_dataloader
 from models import Generator, Discriminator
-from losses import nonsaturating_loss, path_regularize, logistic_loss, d_r1_loss, masked_l1_loss
+from losses import nonsaturating_loss, path_regularize, logistic_loss, d_r1_loss, MaskedRecLoss
 from metrics.fid import FIDTracker
 
 
@@ -102,6 +102,9 @@ class Trainer():
 
         self.g_ema = copy.deepcopy(self.g).eval()
 
+        # Define losses
+        self.rec_loss = MaskedRecLoss(mask='gaussian', num_channels=1, device=self.device)
+
         # Define optimizers
         g_reg_ratio = cfg.TRAIN.G_REG_EVERY / (cfg.TRAIN.G_REG_EVERY + 1)
         d_reg_ratio = cfg.TRAIN.D_REG_EVERY / (cfg.TRAIN.D_REG_EVERY + 1)
@@ -162,7 +165,7 @@ class Trainer():
         d_module = self.d.module if self.ddp else self.d
 
         sample_body_imgs, sample_face_imgs, sample_mask = [x.to(self.device) for x in next(iter(self.val_loader))]
-        sample_masked_body = sample_body_imgs * sample_mask
+        sample_masked_body = torch.cat([sample_body_imgs * sample_mask, sample_mask], dim=1)
         sample_z = torch.randn(self.n_sample, self.latent, device=self.device)
         sample_label = torch.randint(self.num_classes, (sample_z.shape[0],)).to(self.device) if self.num_classes > 1 else None
         self.log.debug(f"sample vector: {sample_z.shape}")
@@ -176,7 +179,7 @@ class Trainer():
         for i in pbar:
             s = time()
             body_imgs, face_imgs, mask = [x.to(self.device) for x in next(loader)]
-            masked_body = body_imgs * mask
+            masked_body = torch.cat([body_imgs * mask, mask], dim=1)
 
             requires_grad(self.g, False)
             requires_grad(self.d, True)
@@ -215,7 +218,7 @@ class Trainer():
             fake_img, _ = self.g(noise, labels_in=fake_label, style_in=face_imgs, content_in=masked_body)
             fake_pred = self.d(fake_img)
             g_loss = nonsaturating_loss(fake_pred)
-            g_rec_loss = masked_l1_loss(body_imgs, fake_img, mask=mask) * self.cfg.RESOLUTION ** 2
+            g_rec_loss = self.rec_loss(body_imgs, fake_img, mask=mask)
             loss_dict['g'] = g_loss
             loss_dict['g_rec'] = g_rec_loss
 
@@ -248,19 +251,20 @@ class Trainer():
 
             accumulate(self.g_ema, g_module, ema_beta)
 
-            if i == 0 or (i + 1) % self.cfg.EVAL.FID.EVERY == 0:
+            if self.fid_tracker is not None and (i == 0 or (i + 1) % self.cfg.EVAL.FID.EVERY == 0):
                 k_iter = (i + 1) / 1000
                 self.g_ema.eval()
                 self.fid_tracker.calc_fid(self.g_ema, k_iter, save=True)
 
             # reduce loss
             with torch.no_grad():
-                losses_list = [torch.stack(list(loss_dict.values()), dim=0)]
-                torch.distributed.reduce_multigpu(losses_list, dst=0)
+                losses = torch.stack(list(loss_dict.values()), dim=0)
+                if self.num_gpus > 1:
+                    torch.distributed.reduce_multigpu(losses, dst=0)
 
             if self.local_rank == 0:
                 reduced_loss = {k: (v / self.num_gpus).item()
-                                for k, v in zip(loss_dict.keys(), losses_list[0])}
+                                for k, v in zip(loss_dict.keys(), losses)}
 
                 if i == 0 or (i + 1) % cfg_t.SAMPLE_EVERY == 0:
                     sample_iter = 'init' if i == 0 else str(i).zfill(digits_length)

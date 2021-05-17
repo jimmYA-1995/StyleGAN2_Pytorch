@@ -143,8 +143,7 @@ class FIDTracker():
 
         finish = time.time()
         total_time = finish - start
-        self.log.info(f'FID in {str(1000 * k_iter).zfill(6)} \
-             iterations: "{fids}". [costs {round(total_time - start, 2)} sec(s)]')
+        self.log.info(f'FID in {str(1000 * k_iter).zfill(6)} iterations: "{fids}". [costs {round(total_time, 2)} sec(s)]')
         self.k_iters.append(k_iter)
         self.fids.append(fids)
 
@@ -236,8 +235,7 @@ class FIDTracker():
                     continue
 
                 body_imgs, face_imgs, mask = [x[:batch].to(self.device) for x in next(loader)]
-                mask, blur_mask = torch.chunk(mask, 2, dim=1)
-                masked_body = body_imgs * mask
+                masked_body = torch.cat(((body_imgs * mask), mask), dim=1)
                 latent = torch.randn(batch, self.latent_size, device=self.device)
                 fake_label = torch.LongTensor([class_idx] * batch).to(self.device)
 
