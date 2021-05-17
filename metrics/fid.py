@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import copy
+import json
 import pickle
 import logging
 from pathlib import Path
@@ -69,10 +70,7 @@ class FIDTracker():
         self.latent_size = cfg.MODEL.LATENT_SIZE
         self.conditional = True if cfg.N_CLASSES > 1 else False
         self.num_classes = cfg.N_CLASSES
-        self.model_bs = cfg.N_SAMPLE
-        self.n_batch = fid_cfg.N_SAMPLE // fid_cfg.BATCH_SIZE
-        self.resid = fid_cfg.N_SAMPLE % fid_cfg.BATCH_SIZE
-        self.idx_iterator = range(self.n_batch + 1)
+        self.model_bs = 8
         self.use_tqdm = use_tqdm
         if fid_cfg.SAMPLE_DIR:
             self.cond_samples = load_condition_sample(fid_cfg.SAMPLE_DIR, self.model_bs)
@@ -144,14 +142,24 @@ class FIDTracker():
             fids.append(mean_norm + trace)
 
         finish = time.time()
+        total_time = finish - start
         self.log.info(f'FID in {str(1000 * k_iter).zfill(6)} \
-             iterations: "{fids}". [costs {round(finish - start, 2)} sec(s)]')
+             iterations: "{fids}". [costs {round(total_time - start, 2)} sec(s)]')
         self.k_iters.append(k_iter)
         self.fids.append(fids)
 
-        if save:
+        if self.rank == 0 and save:
             with open(self.out_dir / 'fid.txt', 'a+') as f:
                 f.write(f'{k_iter}: {fids}\n')
+            result_dict = {"results": {"fid50k_full": fids[0]},
+                           "metric": "fid50k_full",
+                           "total_time": total_time,
+                           "total_time_str": f"{int(total_time // 60)}m {int(total_time % 60)}s",
+                           "num_gpus": self.num_gpus,
+                           "snapshot_pkl": "none",
+                           "timestamp": time.time()}
+            with open(self.out_dir / 'metric-fid50k_full.jsonl', 'at') as f:
+                f.write(json.dumps(result_dict) + '\n')
 
         return fids
 
@@ -204,7 +212,6 @@ class FIDTracker():
             self.log.info(f"complete({round(time.time() - start, 2)} secs)."
                           f"total extracted features: {features.shape[0]}")
 
-
     @torch.no_grad()
     def extract_feature_from_model(self, generator):
         num_sample = self.cfg.N_SAMPLE // self.num_gpus
@@ -229,6 +236,8 @@ class FIDTracker():
                     continue
 
                 body_imgs, face_imgs, mask = [x[:batch].to(self.device) for x in next(loader)]
+                mask, blur_mask = torch.chunk(mask, 2, dim=1)
+                masked_body = body_imgs * mask
                 latent = torch.randn(batch, self.latent_size, device=self.device)
                 fake_label = torch.LongTensor([class_idx] * batch).to(self.device)
 
@@ -236,7 +245,7 @@ class FIDTracker():
                 if self.cond_samples is not None:
                     cond_samples = self.cond_samples[:batch]
 
-                imgs, _ = generator([latent], labels_in=fake_label, style_in=face_imgs, content_in=(body_imgs * mask))
+                imgs, _ = generator([latent], labels_in=fake_label, style_in=face_imgs, content_in=masked_body)
                 feature = self.inceptionV3(imgs[:, :3, :, :])[0].view(imgs.shape[0], -1)
                 if self.num_gpus > 1:
                     _features = []
@@ -334,12 +343,3 @@ if __name__ == '__main__':
         else:
             torch.multiprocessing.spawn(fn=subprocess_fn, args=(args, cfg, temp_dir), nprocs=args.num_gpus)
 
-    # logger.info(f"Get FID of the following {len(ckpts)} ckpt files: {[str(ckpt) for ckpt in ckpts]}")
-
-
-
-        # if args.truncation < 1:
-        #     with torch.no_grad():
-        #         mean_latent = g.mean_latent(args.truncation_mean)
-        # else:
-        #     mean_latent = None

@@ -16,7 +16,7 @@ class Generator(nn.Module):
         label_size,
         resolution,
         embedding_size=0,
-        dlatents_size=512,
+        dlatent_size=512,
         extra_channels=0,
         return_dlatents=False,
         randomize_noise=True,
@@ -53,12 +53,12 @@ class Generator(nn.Module):
         mapping_class = getattr(importlib.import_module('.components', 'models'), mapping_network)
         synthesis_class = getattr(importlib.import_module('.components', 'models'), synthesis_netowrk)
 
-        self.mapping_network = mapping_class(latent_size, label_size, embedding_size, dlatents_size)
+        self.mapping_network = mapping_class(latent_size, label_size, embedding_size, dlatent_size)
         self.synthesis_network = synthesis_class(
             self.num_layers, self.resolution_log2,
             num_channels=self.num_channels,
             randomize_noise=randomize_noise,
-            dlatents_size=dlatents_size, architecture='skip'
+            dlatent_size=dlatent_size, architecture='skip'
         )
 
     def forward(self, latents_in, labels_in=None, style_in=None, content_in=None, return_latents=None):
