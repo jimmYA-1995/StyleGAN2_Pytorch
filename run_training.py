@@ -258,13 +258,13 @@ class Trainer():
 
             # reduce loss
             with torch.no_grad():
-                losses = torch.stack(list(loss_dict.values()), dim=0)
+                losses = [torch.stack(list(loss_dict.values()), dim=0)]
                 if self.num_gpus > 1:
                     torch.distributed.reduce_multigpu(losses, dst=0)
 
             if self.local_rank == 0:
                 reduced_loss = {k: (v / self.num_gpus).item()
-                                for k, v in zip(loss_dict.keys(), losses)}
+                                for k, v in zip(loss_dict.keys(), losses[0])}
 
                 if i == 0 or (i + 1) % cfg_t.SAMPLE_EVERY == 0:
                     sample_iter = 'init' if i == 0 else str(i).zfill(digits_length)

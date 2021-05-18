@@ -190,10 +190,8 @@ class FIDTracker():
 
             for _ in progress_bar:
                 imgs, *_ = next(loader)
-                self.log.debug(f"imgs: {imgs.shape}")
                 imgs = imgs.to(self.device)
                 feature = self.inceptionV3(imgs)[0].view(imgs.shape[0], -1)
-                self.log.debug(f"feature: {feature.shape}")
                 if self.num_gpus > 1:
                     _features = []
                     for src in range(self.num_gpus):
