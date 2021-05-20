@@ -89,7 +89,7 @@ class Trainer():
             label_size,
             cfg.RESOLUTION,
             embedding_size=cfg.MODEL.EMBEDDING_SIZE,
-            dlatent_size=256,
+            dlatent_size=400,
             extra_channels=cfg.MODEL.EXTRA_CHANNEL,
             is_training=True
         ).to(self.device)
@@ -146,7 +146,6 @@ class Trainer():
         # init. FID tracker if needed.
         if 'fid' in self.metrics:
             self.fid_tracker = FIDTracker(cfg, self.local_rank, self.num_gpus, self.out_dir, use_tqdm=(self.local_rank == 0))
-
 
     def train(self):
         cfg_d = self.cfg.DATASET
