@@ -16,7 +16,7 @@ from torchvision import utils
 
 import misc
 from config import get_cfg_defaults, convert_to_dict
-from dataset import get_dataloader, ResamplingDataset
+from dataset import get_dataset, get_dataloader, ResamplingDataset
 from models import Generator, Discriminator
 from losses import nonsaturating_loss, path_regularize, logistic_loss, d_r1_loss, MaskedRecLoss
 from metrics.fid import FIDTracker
@@ -36,13 +36,9 @@ def accumulate(model1, model2, decay=0.999):
 
 
 def sample_data(loader):
-    epoch = 0
     while True:
-        # make sure we shuffle data in distributed training
-        loader.set_epoch(epoch)
         for batch in loader:
             yield batch
-        epoch += 1
 
 
 def make_noise(batch, latent_dim, n_noise, device):
@@ -78,18 +74,12 @@ class Trainer():
         self.device = torch.device(f'cuda:{args.local_rank}')
         self.metrics = cfg.EVAL.METRICS.split(',')
         self.fid_tracker = None
+        self.sample = None
 
         # Datset
         t = time()
         print("get dataloader ...", end='\r')
         self.loader = get_dataloader(cfg, self.batch_size, distributed=self.ddp)
-        val_dataset = ResamplingDataset(cfg.DATASET, cfg.RESOLUTION)
-        self.val_loader = torch.utils.data.DataLoader(
-            val_dataset,
-            batch_size=self.n_sample,
-            sampler=torch.utils.data.distributed.DistributedSampler(val_dataset, shuffle=False),
-            num_workers=1
-        )
         print(f"get dataloader complete ({time() - t :.2f} sec)")
 
         # Define model
@@ -157,6 +147,7 @@ class Trainer():
         if 'fid' in self.metrics:
             self.fid_tracker = FIDTracker(cfg, self.local_rank, self.num_gpus, self.out_dir, use_tqdm=(self.local_rank == 0))
 
+
     def train(self):
         cfg_d = self.cfg.DATASET
         cfg_t = self.cfg.TRAIN
@@ -173,12 +164,6 @@ class Trainer():
         # To make state_dict consistent in mutli nodes & single node training
         g_module = self.g.module if self.ddp else self.g
         d_module = self.d.module if self.ddp else self.d
-
-        sample_body_imgs, sample_face_imgs, sample_mask = [x.to(self.device) for x in next(iter(self.val_loader))]
-        sample_masked_body = torch.cat([sample_body_imgs * sample_mask, sample_mask], dim=1)
-        sample_z = torch.randn(self.n_sample, self.latent, device=self.device)
-        sample_label = torch.randint(self.num_classes, (sample_z.shape[0],)).to(self.device) if self.num_classes > 1 else None
-        self.log.debug(f"sample vector: {sample_z.shape}")
 
         loader = sample_data(self.loader)
         pbar = range(self.start_iter, cfg_t.ITERATION)
@@ -277,37 +262,12 @@ class Trainer():
                                 for k, v in zip(loss_dict.keys(), losses[0])}
 
                 if i == 0 or (i + 1) % cfg_t.SAMPLE_EVERY == 0:
-                    sample_iter = 'init' if i == 0 else str(i).zfill(digits_length)
-                    with torch.no_grad():
-                        self.g_ema.eval()
-                        sample, _ = self.g_ema([sample_z], labels_in=sample_label, style_in=sample_face_imgs, content_in=sample_masked_body)
+                    sample_iter = 'init' if i == 0 else str(i + 1).zfill(digits_length)
+                    self.sampling(sample_iter)
 
-                        if cfg_d.DATASET == 'MultiChannelDataset':
-                            sample_list = torch.split(sample, cfg_d.CHANNELS, dim=1)
-                            sample_list = [(x.repeat(1, 3, 1, 1) if x.shape[1] == 1 else x)for x in sample_list]
-
-                            utils.save_image(
-                                list(torch.cat(sample_list, dim=2).unbind(0)),
-                                self.out_dir / f'samples/fake-{sample_iter}.png',
-                                nrow=int(self.n_sample ** 0.5) * 3,
-                                normalize=True,
-                                range=(-1, 1),  # value_range in PyTorch 1.8+
-                            )
-
-                        else:
-                            b, c, h, w = sample.shape
-                            stack_samples = torch.stack([sample_face_imgs, sample_body_imgs, sample], dim=0)
-                            samples = torch.transpose(stack_samples, 0, 1).reshape(3 * b, c, h, w)
-                            utils.save_image(
-                                samples,
-                                self.out_dir / f'samples/fake-{sample_iter}.png',
-                                nrow=int(self.n_sample ** 0.5) * 3,
-                                normalize=True,
-                                range=(-1, 1),
-                            )
-
-                if i == 0 or (i + 1) % cfg_t.SAVE_CKPT_EVERY == 0:
+                if (i + 1) % cfg_t.SAVE_CKPT_EVERY == 0:
                     ckpt_iter = str(i + 1).zfill(digits_length)
+                    ckpt_dir = self.out_dir / 'checkpoints'
                     snapshot = {
                         'g': g_module.state_dict(),
                         'd': d_module.state_dict(),
@@ -315,14 +275,11 @@ class Trainer():
                         'g_optim': self.g_optim.state_dict(),
                         'd_optim': self.d_optim.state_dict(),
                     }
-                    torch.save(snapshot, self.out_dir / f'checkpoints/ckpt-{ckpt_iter}.pt')
-                    ckpt_dir = self.out_dir / 'checkpoints'
+                    torch.save(snapshot, ckpt_dir / f'ckpt-{ckpt_iter}.pt')
                     ckpt_paths = list(ckpt_dir.glob('*.pt'))
                     if len(ckpt_paths) > cfg_t.CKPT_MAX_KEEP + 1:
-                        ckpt_idx = sorted(
-                            [int(str(p.name)[5:5 + digits_length]) for p in ckpt_paths])
-                        os.remove(
-                            ckpt_dir / f'ckpt-{str(ckpt_idx[1]).zfill(digits_length)}.pt')
+                        ckpt_idx = sorted([int(str(p.name)[5:5 + digits_length]) for p in ckpt_paths])
+                        os.remove(ckpt_dir / f'ckpt-{str(ckpt_idx[0]).zfill(digits_length)}.pt')
 
                 if wandb and self.use_wandb:
                     wandb.log({
@@ -344,6 +301,59 @@ class Trainer():
 
         if args.local_rank == 0 and self.fid_tracker:
             self.fid_tracker.plot_fid()
+
+    def _get_sample_data(self):
+        cfg = self.cfg
+        sample = misc.EasyDict()
+        sample.body_imgs, sample.face_imgs, sample.mask = [], [], []
+
+        # ugly. concat val data from real dataset & resampling
+        datasets = [get_dataset(cfg.DATASET, cfg.RESOLUTION, split='val'),
+                    ResamplingDataset(cfg.DATASET, cfg.RESOLUTION)]
+        for ds in datasets:
+            loader = torch.utils.data.DataLoader(ds, batch_size=self.n_sample // len(datasets), shuffle=False, num_workers=0)
+            body_imgs, face_imgs, mask = [x.to(self.device) for x in next(iter(loader))]
+            sample.body_imgs.append(body_imgs)
+            sample.face_imgs.append(face_imgs)
+            sample.mask.append(mask)
+            del loader
+
+        sample.body_imgs = torch.cat(sample.body_imgs, dim=0)
+        sample.face_imgs = torch.cat(sample.face_imgs, dim=0)
+        sample.mask = torch.cat(sample.mask, dim=0)
+        sample.masked_body = torch.cat([sample.body_imgs * sample.mask, sample.mask], dim=1)
+        sample.z = torch.randn(self.n_sample, self.latent, device=self.device)
+        sample.label = torch.randint(self.num_classes, (sample.z.shape[0],)).to(self.device) if self.num_classes > 1 else None
+        self.log.debug(f"sample vector: {sample.z.shape}")
+
+        return sample
+
+    def sampling(self, idx):
+        assert self.local_rank == 0
+        if self.sample is None:
+            self.sample = self._get_sample_data()
+
+        cfg = self.cfg.DATASET
+        with torch.no_grad():
+            self.g_ema.eval()
+            samples, _ = self.g_ema([self.sample.z], labels_in=self.sample.label, style_in=self.sample.face_imgs, content_in=self.sample.masked_body)
+            b, c, h, w = samples.shape
+            if cfg.DATASET == 'MultiChannelDataset':
+                assert c == sum(cfg.CHANNELS)
+                samples = torch.split(samples, cfg.CHANNELS, dim=1)
+                samples = [(x.repeat(1, 3, 1, 1) if x.shape[1] == 1 else x)for x in samples]
+                samples = torch.cat(samples, dim=2)
+            else:
+                samples = torch.stack([self.sample.face_imgs, self.sample.body_imgs, samples], dim=0)
+                samples = torch.transpose(samples, 0, 1).reshape(3 * b, c, h, w)
+
+            utils.save_image(
+                samples,
+                self.out_dir / f'samples/fake-{idx}.png',
+                nrow=int(self.n_sample ** 0.5) * 3,
+                normalize=True,
+                range=(-1, 1),  # value_range in PyTorch 1.8+
+            )
 
 
 if __name__ == '__main__':

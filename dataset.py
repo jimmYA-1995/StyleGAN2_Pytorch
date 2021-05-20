@@ -181,7 +181,7 @@ class GenericDataset(data.Dataset):
     def __init__(self, config, resolution, transform=None, split='train', **kwargs):
         self.paths = []
         for ext in ALLOW_EXTS:
-            self.paths += list((Path(config.ROOTS[0]) / split).glob(f"*.{ext}"))
+            self.paths += sorted(list((Path(config.ROOTS[0]) / split).glob(f"*.{ext}")))
         self.config = config
         self.resolution = resolution
         self.transform = transform
@@ -239,7 +239,7 @@ class ResamplingDataset(data.Dataset):
         self.tgt_size = resolution
         statistics = pickle.load(
             open(Path('~/data/deepfashion256_pix2pix/landmarks_statistics.pkl').expanduser(), 'rb'))
-        self.paths = list(Path('~/data/stylgan2-ada-outputs/').expanduser().glob('*.png'))
+        self.paths = sorted(list(Path('~/data/stylgan2-ada-outputs/').expanduser().glob('*.png')))
         self.ori_size = statistics['resolution']
         self.V = statistics['V']
         self.mu = statistics['mu']
