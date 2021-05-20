@@ -13,12 +13,12 @@ import matplotlib.pyplot as plt
 import torch
 from torch import nn
 from torch.autograd import backward
-from torchvision import transforms
+from torchvision import transforms, utils
 from scipy import linalg
 from tqdm import tqdm
 
 import misc
-from dataset import get_dataset
+from dataset import get_dataset, ResamplingDataset
 from .calc_inception import load_patched_inception_v3
 
 
@@ -107,7 +107,7 @@ class FIDTracker():
                 with open(self.out_dir / 'inception_cache.pkl', 'wb') as f:
                     pickle.dump(dict(mean=self.real_mean, cov=self.real_cov, idx_to_class=self.idx_to_class), f)
 
-        self.val_dataset = get_dataset(cfg.DATASET, cfg.RESOLUTION, split='val')
+        self.val_dataset = ResamplingDataset(cfg.DATASET, cfg.RESOLUTION)
         self.log.info(f"validation data samples: {len(self.val_dataset)}")
 
     def calc_fid(self, generator, k_iter, save=False, eps=1e-6):
@@ -219,7 +219,7 @@ class FIDTracker():
         for class_idx in range(self.num_classes):
             loader = torch.utils.data.DataLoader(self.val_dataset,
                                                  batch_size=self.model_bs,
-                                                 shuffle=True,
+                                                 shuffle=False,
                                                  num_workers=2)
             loader = sample_data(loader)
             features = []
@@ -242,6 +242,15 @@ class FIDTracker():
                     cond_samples = self.cond_samples[:batch]
 
                 imgs, _ = generator([latent], labels_in=fake_label, style_in=face_imgs, content_in=masked_body)
+                # if self.rank == 0:
+                #     utils.save_image(
+                #         imgs,
+                #         self.out_dir / f'fake-{i}.png',
+                #         nrow=4,
+                #         normalize=True,
+                #         range=(-1, 1),
+                #     )
+
                 feature = self.inceptionV3(imgs[:, :3, :, :])[0].view(imgs.shape[0], -1)
                 if self.num_gpus > 1:
                     _features = []

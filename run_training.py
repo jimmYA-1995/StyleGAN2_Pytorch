@@ -16,7 +16,7 @@ from torchvision import utils
 
 import misc
 from config import get_cfg_defaults, convert_to_dict
-from dataset import get_dataloader
+from dataset import get_dataloader, ResamplingDataset
 from models import Generator, Discriminator
 from losses import nonsaturating_loss, path_regularize, logistic_loss, d_r1_loss, MaskedRecLoss
 from metrics.fid import FIDTracker
@@ -36,9 +36,13 @@ def accumulate(model1, model2, decay=0.999):
 
 
 def sample_data(loader):
+    epoch = 0
     while True:
+        # make sure we shuffle data in distributed training
+        loader.set_epoch(epoch)
         for batch in loader:
             yield batch
+        epoch += 1
 
 
 def make_noise(batch, latent_dim, n_noise, device):
@@ -79,7 +83,13 @@ class Trainer():
         t = time()
         print("get dataloader ...", end='\r')
         self.loader = get_dataloader(cfg, self.batch_size, distributed=self.ddp)
-        self.val_loader = get_dataloader(cfg, self.n_sample, split='val', distributed=self.ddp)
+        val_dataset = ResamplingDataset(cfg.DATASET, cfg.RESOLUTION)
+        self.val_loader = torch.utils.data.DataLoader(
+            val_dataset,
+            batch_size=self.n_sample,
+            sampler=torch.utils.data.distributed.DistributedSampler(val_dataset, shuffle=False),
+            num_workers=1
+        )
         print(f"get dataloader complete ({time() - t :.2f} sec)")
 
         # Define model

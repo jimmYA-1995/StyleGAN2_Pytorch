@@ -1,8 +1,10 @@
 from io import BytesIO
 from pathlib import Path
 from functools import partial
+import pickle
 from tqdm import tqdm
 import lmdb
+import cv2
 import torch
 import numpy as np
 from PIL import Image
@@ -225,6 +227,52 @@ class DeepFashionDataset(GenericDataset):
             imgB, mask = torch.split(imgB, 3, dim=0)
             return imgB, imgA, mask
         return imgB, imgA
+
+
+class ResamplingDataset(data.Dataset):
+    def __init__(self, cfg, resolution):
+        trf = [
+            transforms.ToTensor(),
+            transforms.Normalize(cfg.MEAN[:3], cfg.STD[:3], inplace=True),
+        ]
+        self.transform = transforms.Compose(trf)
+        self.tgt_size = resolution
+        statistics = pickle.load(
+            open(Path('~/data/deepfashion256_pix2pix/landmarks_statistics.pkl').expanduser(), 'rb'))
+        self.paths = list(Path('~/data/stylgan2-ada-outputs/').expanduser().glob('*.png'))
+        self.ori_size = statistics['resolution']
+        self.V = statistics['V']
+        self.mu = statistics['mu']
+        self.sigma = statistics['sigma']
+        self.ndim = statistics['V'].shape[1]
+
+    def __len__(self):
+        return len(self.paths)
+
+    def __getitem__(self, idx):
+        canvas = np.ones((self.ori_size, self.ori_size, 3), dtype=np.uint8) * 127  # gray
+        z = np.random.randn(self.ndim, )
+        resample_latent = z @ self.V.T * self.sigma + self.mu
+        resample_latent = np.where(resample_latent > 0, resample_latent, 0).astype(int)
+        x1, y1, x2, y2 = resample_latent[4:8]
+        face_img = Image.open(self.paths[idx])
+        face_np = np.asarray(face_img.resize((x2 - x1, y2 - y1), Image.ANTIALIAS))
+        canvas[y1:y2, x1:x2] = face_np
+        rect = np.array([(x1, y1), (x1, y2), (x2, y2), (x2, y1)], dtype=np.float32)
+        quad = resample_latent[8:].reshape(4, 2).astype(np.float32)
+        M = cv2.getPerspectiveTransform(rect, quad)
+        canvas = cv2.warpPerspective(canvas, M, (self.ori_size, self.ori_size), borderMode=cv2.BORDER_REPLICATE)
+        mask = (canvas != 127).all(axis=-1).astype(np.float32)
+
+        face_img = face_img.resize((self.tgt_size, self.tgt_size), Image.ANTIALIAS)
+        masked_body = Image.fromarray(canvas).resize((self.tgt_size, self.tgt_size), Image.ANTIALIAS)
+        mask = cv2.resize(mask[..., None], (self.tgt_size, self.tgt_size), interpolation=cv2.INTER_NEAREST)
+        if self.transform:
+            face_img = self.transform(face_img)
+            masked_body = self.transform(masked_body)
+            mask = transforms.ToTensor()(mask.copy())
+
+        return masked_body, face_img, mask
 
 
 def data_sampler(dataset, shuffle, distributed):
