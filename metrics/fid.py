@@ -106,8 +106,9 @@ class FIDTracker():
                 self.log.info(f"save inception cache in {self.out_dir}")
                 with open(self.out_dir / 'inception_cache.pkl', 'wb') as f:
                     pickle.dump(dict(mean=self.real_mean, cov=self.real_cov, idx_to_class=self.idx_to_class), f)
-
-        self.val_dataset = ResamplingDataset(cfg.DATASET, cfg.RESOLUTION)
+        
+        # self.val_dataset = ResamplingDataset(cfg.DATASET, cfg.RESOLUTION)
+        self.val_dataset = get_dataset(cfg.DATASET, cfg.RESOLUTION, split='val')
         self.log.info(f"validation data samples: {len(self.val_dataset)}")
 
     def calc_fid(self, generator, k_iter, save=False, eps=1e-6):

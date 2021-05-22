@@ -127,6 +127,10 @@ class Trainer():
 
             self.g_optim.load_state_dict(ckpt['g_optim'])
             self.d_optim.load_state_dict(ckpt['d_optim'])
+            try:
+                self.start_iter = int(Path(cfg.TRAIN.CKPT).stem.split('-')[1])
+            except ValueError:
+                self.log.error(f"Fail to parse #iteration from checkpoint filename. Valid format is 'ckpt-<#iter>.pt'")
 
         if self.ddp:
             self.g = nn.parallel.DistributedDataParallel(
