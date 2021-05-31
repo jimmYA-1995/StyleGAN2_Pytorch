@@ -237,8 +237,8 @@ class ResamplingDataset(data.Dataset):
         ]
         self.transform = transforms.Compose(trf)
         self.tgt_size = resolution
-        statistics = pickle.load(open(Path(cfg.ROOTS[0]) / 'landmarks_statistics.pkl', 'rb'))
-        self.paths = sorted(list((Path(cfg.ROOTS[0]) / 'stylgan2-ada-outputs').glob('*.png')))
+        statistics = pickle.load(open(Path(cfg.ROOTS[0]).parent / 'landmarks_statistics.pkl', 'rb'))
+        self.paths = sorted(list((Path(cfg.ROOTS[0]).parent / 'stylegan2-ada-outputs').glob('*.png')))
         self.ori_size = statistics['resolution']
         self.V = statistics['V']
         self.mu = statistics['mu']
