@@ -1,6 +1,7 @@
 import os
 import sys
 import copy
+import shutil
 import random
 import argparse
 from time import time
@@ -385,10 +386,11 @@ if __name__ == '__main__':
 
     if args.num_gpus == 1 or args.local_rank == 0:
         misc.prepare_training(args, cfg)
+        print(cfg)
+        shutil.copy(args.cfg, args.out_dir)
 
     logger = misc.create_logger(**vars(args))
 
-    print(cfg)
     t = time()
     logger.info("initialize trainer...")
     trainer = Trainer(args, cfg, logger)
