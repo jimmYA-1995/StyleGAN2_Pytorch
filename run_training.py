@@ -161,8 +161,8 @@ class Trainer():
         digits_length = len(str(cfg_t.ITERATION))
         ema_beta = 0.5 ** (self.batch_size * self.num_gpus / (10 * 1000))
         mean_path_length = 0
-        loss_dict = OrderedDict(g=None, d=None, g_rec=None, real_score=None, fake_score=None,
-                                mean_path=None, r1=None, path=None, path_length=None)
+        loss_keys = ['g', 'd', 'g_rec', 'real_score', 'fake_score', 'mean_path', 'r1', 'path', 'path_length']
+        loss_dict = OrderedDict((k, torch.tensor(0.0, dtype=torch.float, device=self.device)) for k in loss_keys)
 
         # To make state_dict consistent in mutli nodes & single node training
         g_module = self.g.module if self.ddp else self.g
