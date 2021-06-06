@@ -20,7 +20,7 @@ from torch.utils.file_baton import FileBaton
 #----------------------------------------------------------------------------
 # Global options.
 
-verbosity = 'full' # Verbosity level: 'none', 'brief', 'full'
+verbosity = 'brief' # Verbosity level: 'none', 'brief', 'full'
 
 #----------------------------------------------------------------------------
 # Internal helper funcs.

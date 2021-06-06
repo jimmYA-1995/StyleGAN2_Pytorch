@@ -103,8 +103,9 @@ class Discriminator(nn.Module):
         architecture='resnet',
         **kwargs,
     ):
-        super(Discriminator, self).__init__()
         assert architecture in ['skip', 'resnet'], "unsupported D architecture."
+        super(Discriminator, self).__init__()
+        mbstd_num_channels = 1
         self.img_channels = 3 + extra_channels
         self.mbstd_group_size = mbstd_group_size
         self.mbstd_num_features = mbstd_num_features
@@ -123,7 +124,7 @@ class Discriminator(nn.Module):
             self.blocks.append(DBlock(nf(res - 1), nf(res - 2), self.architecture))
 
         # output layer
-        self.conv_out = Conv2d_layer(nf(1) + 1, nf(1), bias=False)  # add minibatch std layer
+        self.conv_out = Conv2d_layer(nf(1) + mbstd_num_channels, nf(1), use_bias=False)
         self.dense_out = Dense_layer(512 * 4 * 4, nf(0))
         self.label_out = Dense_layer(nf(0), max(label_size, 1))
 

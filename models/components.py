@@ -4,91 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn import Parameter
 
-from torch_utils.ops import upfirdn2d, fused_leaky_relu
-from torch_utils.ops import conv2d_resample
-
-# _bias_act_funcs = {
-#     'linear': lambda x, b, **_: x.add_(b),
-#     'lrelu': lambda x, b: F.leaky_relu(x + b),
-#     'fused_lrelu': lambda x, b: fused_leaky_relu(x, b)
-# }
-
-
-# from: https://github.com/rosinality/stylegan2-pytorch/blob/master/model.py
-# def make_kernel(k):
-#     k = torch.tensor(k, dtype=torch.float32)
-#     if k.ndim == 1:
-#         k = k[None, :] * k[:, None]
-
-#     k /= k.sum()
-#     return k
-
-
-# def get_weight(shape, gain=1, use_wscale=True, lrmul=1):
-#     fan_in = np.prod(shape[1:])  # [fmaps_out, fmaps_in, kernel, kernel] or [out, in]
-#     he_std = gain / np.sqrt(fan_in)  # He init
-
-#     # Equalized learning rate and custom learning rate multiplier.
-#     if use_wscale:
-#         init_std = 1.0 / lrmul
-#         runtime_coef = he_std * lrmul
-#     else:
-#         init_std = he_std / lrmul
-#         runtime_coef = lrmul
-
-#     return Parameter(torch.randn(*shape).mul_(init_std)), runtime_coef
-
-
-# class Blur(nn.Module):
-#     def __init__(self, kernel, pad, upsample_factor=1):
-#         super().__init__()
-#         kernel = make_kernel(kernel)
-#         if upsample_factor > 1:
-#             kernel = kernel * (upsample_factor ** 2)
-
-#         self.register_buffer('kernel', kernel)
-#         self.pad = pad
-
-#     def forward(self, input):
-#         return upfirdn2d(input, self.kernel, pad=self.pad)
-
-
-# class Upsample(nn.Module):
-#     def __init__(self, kernel, factor=2):
-#         super().__init__()
-
-#         self.factor = factor
-#         kernel = make_kernel(kernel) * (factor ** 2)
-#         self.register_buffer('kernel', kernel)
-
-#         p = kernel.shape[0] - factor
-
-#         pad0 = (p + 1) // 2 + factor - 1
-#         pad1 = p // 2
-
-#         self.pad = (pad0, pad1)
-
-#     def forward(self, input):
-#         return upfirdn2d(input, self.kernel, up=self.factor, down=1, pad=self.pad)
-
-
-# class Downsample(nn.Module):
-#     def __init__(self, kernel, factor=2):
-#         super().__init__()
-
-#         self.factor = factor
-#         kernel = make_kernel(kernel)
-#         self.register_buffer('kernel', kernel)
-
-#         p = kernel.shape[0] - factor
-
-#         pad0 = (p + 1) // 2
-#         pad1 = p // 2
-
-#         self.pad = (pad0, pad1)
-
-#     def forward(self, input):
-#         return upfirdn2d(input, self.kernel, up=1, down=self.factor, pad=self.pad)
+from torch_utils.ops import upfirdn2d, fused_act, conv2d_resample
 
 
 class Dense_layer(nn.Module):
@@ -98,8 +14,6 @@ class Dense_layer(nn.Module):
         out_dim,
         use_bias=True,
         bias_init=0,
-        # nonlinearity='fused_lrelu',
-        # negative_slope=0.2,
         lrmul=1,
     ):
         super(Dense_layer, self).__init__()
@@ -127,18 +41,7 @@ class Dense_layer(nn.Module):
 
         x = F.linear(x, w)
 
-        return fused_leaky_relu(x, b)
-
-
-# class ScaledLeakyReLU(nn.Module):
-#     def __init__(self, negative_slope=0.2):
-#         super(ScaledLeakyReLU, self).__init__()
-#         self.negative_slope = negative_slope
-
-#     def forward(self, input):
-#         out = F.leaky_relu(input, negative_slope=self.negative_slope)
-
-#         return out * math.sqrt(2)
+        return fused_act.fused_leaky_relu(x, b)
 
 
 class Conv2d_layer(nn.Module):
@@ -148,35 +51,21 @@ class Conv2d_layer(nn.Module):
         out_channels,
         kernel=3,
         mode=None,
-        bias=True,
+        use_bias=True,
         resample_filter=[1, 3, 3, 1],
     ):
         super(Conv2d_layer, self).__init__()
         assert mode in ['up', 'down', None]
 
-        # self.out_channels, self.in_channels, self.kernel = out_channels, in_channels, kernel
         self.mode = mode
         self.up = 2 if self.mode == "up" else 1
         self.down = 2 if self.mode == "down" else 1
         self.padding = kernel // 2
 
-        # if self.mode == 'up':
-        #     factor = 2
-        #     p = (len(resample_filter) - factor) - (kernel - 1)
-        #     pad0 = (p + 1) // 2 + factor - 1
-        #     pad1 = p // 2 + 1
-        #     self.blur = Blur(resample_filter, pad=(pad0, pad1), upsample_factor=factor)
-        # elif self.mode == 'down':
-        #     factor = 2
-        #     p = (len(resample_filter) - factor) + (kernel - 1)
-        #     pad0 = (p + 1) // 2
-        #     pad1 = p // 2
-        #     self.blur = Blur(resample_filter, pad=(pad0, pad1))
-
         self.register_buffer('resample_filter', upfirdn2d.setup_filter(resample_filter))
         self.weight = Parameter(torch.randn([out_channels, in_channels, kernel, kernel]))
         self.weight_gain = 1 / np.sqrt(in_channels * kernel ** 2)
-        self.bias = Parameter(torch.zeros([out_channels])) if bias else torch.empty([0])
+        self.bias = Parameter(torch.zeros([out_channels])) if use_bias else torch.empty([0])
 
     def forward(self, x, *args):
         weight = self.weight * self.weight_gain
@@ -184,7 +73,7 @@ class Conv2d_layer(nn.Module):
         x = conv2d_resample.conv2d_resample(x=x, w=weight.to(x.dtype), f=self.resample_filter,
                                             up=self.up, down=self.down, padding=self.padding, flip_weight=flip_weight)
 
-        return fused_leaky_relu(x, self.bias.to(x.device))
+        return fused_act.fused_leaky_relu(x, self.bias.to(x.device))
 
 
 class Modulated_conv2d_layer(nn.Module):
@@ -197,16 +86,10 @@ class Modulated_conv2d_layer(nn.Module):
         mode=None,
         demodulate=True,
         resample_filter=[1, 3, 3, 1],
-        # gain=1,
-        # use_wscale=True,
-        # lrmul=1
     ):
         super(Modulated_conv2d_layer, self).__init__()
         assert mode in ['up', 'down', None]
 
-        # self.in_channels = in_channels
-        # self.out_channels = out_channels
-        # self.kernel = kernel
         self.mode = mode
         self.dlatent_dim = dlatent_dim
         self.demodulate = demodulate
@@ -214,19 +97,6 @@ class Modulated_conv2d_layer(nn.Module):
 
         self.up = 2 if self.mode == 'up' else 1
         self.down = 2 if self.mode == 'down' else 1
-        # if self.mode == 'up':
-        #     factor = 2
-        #     p = (len(resample_filter) - factor) - (kernel - 1)
-        #     pad0 = (p + 1) // 2 + factor - 1
-        #     pad1 = p // 2 + 1
-        #     self.blur = Blur(resample_filter, pad=(pad0, pad1),
-        #                      upsample_factor=factor)
-        # elif self.mode == 'down':
-        #     factor = 2
-        #     p = (len(resample_filter) - factor) + (kernel - 1)
-        #     pad0 = (p + 1) // 2
-        #     pad1 = p // 2
-        #     self.blur = Blur(resample_filter, pad=(pad0, pad1))
 
         self.register_buffer('resample_filter', upfirdn2d.setup_filter(resample_filter))
         self.weight = Parameter(torch.randn([out_channels, in_channels, kernel, kernel]))  # already contiguous
@@ -246,39 +116,13 @@ class Modulated_conv2d_layer(nn.Module):
             d = torch.rsqrt(torch.sum(weight ** 2, dim=(2, 3, 4)) + 1e-8)
             weight = weight * d.reshape(b, -1, 1, 1, 1)
 
+        # using group conv. to deal instance-wise conv.
         x = x.view(1, -1, h, w)
         weight = weight.reshape(-1, in_channels, *weight.shape[3:])
-
-        # if self.mode == 'up':
-        #     w = w.permute(0, 2, 1, 3, 4)
-        #     w = w.reshape(-1, self.out_channels, self.kernel, self.kernel)
-        #     x = F.conv_transpose2d(x, w, stride=2, padding=0, groups=b)
-        # elif self.mode == 'down':
-        #     x = self.blur(x)
-        #     w = w.view(b * self.out_channels, -1, self.kernel, self.kernel)
-        #     x = F.conv2d(x, w, stride=2, padding=0, groups=b)
-        # else:
-        #     w = w.view(b * self.out_channels, -1, self.kernel, self.kernel)
-        #     x = F.conv2d(x, w, padding=self.padding, groups=b)
-
         x = conv2d_resample.conv2d_resample(x=x, w=weight.to(x.dtype), f=self.resample_filter,
                                             up=self.up, down=self.down, padding=self.padding, groups=b, flip_weight=(self.up == 1))
         x = x.view(b, -1, *x.shape[2:])
         return x
-
-
-# class NoiseInjection(nn.Module):
-#     def __init__(self):
-#         super(NoiseInjection, self).__init__()
-#         self.noise_strength = Parameter(torch.zeros(1))
-
-#     def forward(self, x, noise=None):
-#         if noise is None:
-#             # random noise
-#             batch, _, height, width = x.shape
-#             noise = x.new_empty(batch, 1, height, width).normal_()
-
-#         return x + self.noise_strength * noise
 
 
 class Layer(nn.Module):
@@ -299,7 +143,6 @@ class Layer(nn.Module):
 
         self.noise_strength = Parameter(torch.zeros([1]))
         self.register_buffer('noise_const', torch.randn([1, 1, resolution, resolution]))  # only using by G_ema
-
         self.bias = Parameter(torch.zeros([out_channels]))
 
     def forward(self, latents, dlatents, noise_mode='random'):
@@ -315,7 +158,7 @@ class Layer(nn.Module):
         if noise is not None:
             x = x.add_(noise)
 
-        return fused_leaky_relu(x, self.bias)
+        return fused_act.fused_leaky_relu(x, self.bias)
 
 
 class ContentEncoder(nn.Module):
@@ -388,11 +231,11 @@ class DBlock(nn.Module):
         if architecture == 'skip':
             self.frgb = Conv2d_layer(in_channels, out_channels, kernel=1)
         else:
-            self.skip = Conv2d_layer(in_channels, out_channels, kernel=1, bias=False)
+            self.skip = Conv2d_layer(in_channels, out_channels, kernel=1, use_bias=False)
 
         self.register_buffer('resample_filter', upfirdn2d.setup_filter(resample_filter))
-        self.conv = Conv2d_layer(in_channels, in_channels, bias=False, resample_filter=resample_filter)
-        self.conv_down = Conv2d_layer(in_channels, out_channels, mode='down', bias=False, resample_filter=resample_filter)
+        self.conv = Conv2d_layer(in_channels, in_channels, use_bias=False, resample_filter=resample_filter)
+        self.conv_down = Conv2d_layer(in_channels, out_channels, mode='down', use_bias=False, resample_filter=resample_filter)
 
     def forward(self, latents_in, skip=None):
         if skip is not None:
@@ -423,10 +266,8 @@ class G_synthesis_stylegan2(nn.Module):
         fmap_min=1,                  # Minimum number of feature maps in any layer.
         fmap_max=512,                # Maximum number of feature maps in any layer.
         architecture='skip',         # Architecture: 'orig', 'skip', 'resnet'.
-        # nonlinearity='lrelu',        # Activation function: 'relu', 'lrelu', etc.
         resample_filter=[1, 3, 3, 1],  # Low-pass filter to apply when resampling activations. None = no filtering.
     ):
-
         super(G_synthesis_stylegan2, self).__init__()
         res_log2 = int(np.log2(img_resolution))
         self.res_log2 = res_log2
@@ -498,7 +339,7 @@ class G_mapping(nn.Module):
         latent_size=512,         # Latent vector (Z) dimensionality.
         label_size=0,            # Label dimensionality, 0 if no labels.
         embedding_size=0,
-        dlatent_dim=512,        # Disentangled latent (W) dimensionality.
+        dlatent_dim=512,         # Disentangled latent (W) dimensionality.
         mapping_layers=8,        # Number of mapping layers.
         mapping_fmaps=512,       # Number of activations in the mapping layers.
         mapping_lrmul=0.01,      # Learning rate multiplier for the mapping layers.
@@ -521,13 +362,6 @@ class G_mapping(nn.Module):
             fc.append(Dense_layer(fan_in, fmaps, lrmul=mapping_lrmul))
             fan_in = fmaps
         self.fc = nn.Sequential(*fc)
-
-        # self.init_weights()
-
-    # def init_weights(self):
-    #     for module in self.modules():
-    #         if isinstance(module, nn.Linear) or isinstance(module, nn.Embedding):
-    #             nn.init.normal_(module.weight, 0, 1) # fix init std.
 
     def forward(self, latents, labels=None, dlatent_broadcast=None):
         x = latents
