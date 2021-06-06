@@ -6,7 +6,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from .components import FromRGB, DBlock, minibatch_stddev_layer, Layer, Dense_layer
+from .components import DBlock, minibatch_stddev_layer, Layer, Conv2d_layer, Dense_layer
 
 
 class Generator(nn.Module):
@@ -16,24 +16,24 @@ class Generator(nn.Module):
         label_size,
         resolution,
         embedding_size=0,
-        dlatent_size=512,
+        dlatent_dim=512,
         extra_channels=0,
-        return_dlatents=False,
-        randomize_noise=True,
         mapping_network='G_mapping',
         synthesis_netowrk='G_synthesis_stylegan2',
-        is_training=None,
-        truncation_psi=0.5,
-        truncation_cut_off=None,
-        truncation_psi_val=None,
-        truncation_cut_off_val=None,
-        dlatent_avg_beta=0.995,
+        # use_noise=True,
+        # is_training=None,
+        # truncation_psi=0.5,
+        # truncation_cut_off=None,
+        # truncation_psi_val=None,
+        # truncation_cut_off_val=None,
+        # dlatent_avg_beta=0.995,
         **kwargs
     ):
-        super(Generator, self).__init__()
-
+        assert resolution >= 4 and resolution & (resolution - 1) == 0
         if label_size > 0:
             assert embedding_size > 0
+        super(Generator, self).__init__()
+
         # assert is_training is not None
         # if is_training:
         #     truncation_psi = truncation_cut_off = None
@@ -43,9 +43,6 @@ class Generator(nn.Module):
         #     dlatent_avg_beta = None
         self.resolution_log2 = int(np.log2(resolution))
         self.num_layers = self.resolution_log2 * 2 - 2
-        assert resolution == 2**self.resolution_log2 and resolution >= 4
-
-        self.return_dlatents = return_dlatents
 
         self.num_channels = 3 + extra_channels
 
@@ -53,15 +50,14 @@ class Generator(nn.Module):
         mapping_class = getattr(importlib.import_module('.components', 'models'), mapping_network)
         synthesis_class = getattr(importlib.import_module('.components', 'models'), synthesis_netowrk)
 
-        self.mapping_network = mapping_class(latent_size, label_size, embedding_size, dlatent_size)
+        self.mapping_network = mapping_class(latent_size, label_size, embedding_size, dlatent_dim)
         self.synthesis_network = synthesis_class(
-            self.num_layers, self.resolution_log2,
-            num_channels=self.num_channels,
-            randomize_noise=randomize_noise,
-            dlatent_size=dlatent_size, architecture='skip'
+            dlatent_dim, resolution,
+            img_channels=self.num_channels,
+            architecture='skip'
         )
 
-    def forward(self, latents_in, labels_in=None, style_in=None, content_in=None, return_latents=None):
+    def forward(self, latents_in, labels_in=None, style_in=None, content_in=None, return_latents=None, **synthesis_kwargs):
         # style mixing
         if len(latents_in) == 2:
             idx = random.randint(1, self.num_layers - 1)
@@ -72,7 +68,7 @@ class Generator(nn.Module):
         else:
             dlatents = self.mapping_network(latents_in[0], labels_in, dlatent_broadcast=self.num_layers)
 
-        images_out = self.synthesis_network(dlatents, style_in=style_in, content_in=content_in)
+        images_out = self.synthesis_network(dlatents, style_in=style_in, content_in=content_in, **synthesis_kwargs)
 
         if return_latents:
             return images_out, dlatents
@@ -113,21 +109,21 @@ class Discriminator(nn.Module):
         self.mbstd_group_size = mbstd_group_size
         self.mbstd_num_features = mbstd_num_features
         self.resolution_log2 = int(np.log2(resolution))
-        self.arch = architecture
+        self.architecture = architecture
 
         def nf(stage):
             scaled = int(fmap_base / (2.0 ** (stage * fmap_decay)))
             return np.clip(scaled, fmap_min, fmap_max)
 
-        if self.arch == 'resnet':
-            self.frgb = FromRGB(self.img_channels, nf(self.resolution_log2 - 1))
+        if self.architecture == 'resnet':
+            self.frgb = Conv2d_layer(self.img_channels, nf(self.resolution_log2 - 1), kernel=1)
 
         self.blocks = nn.ModuleList()
         for res in range(self.resolution_log2, 2, -1):
-            self.blocks.append(DBlock(nf(res - 1), nf(res - 2), self.arch))
+            self.blocks.append(DBlock(nf(res - 1), nf(res - 2), self.architecture))
 
         # output layer
-        self.conv_out = Layer(nf(1) + 1, nf(1), kernel=3, use_bias=False)
+        self.conv_out = Conv2d_layer(nf(1) + 1, nf(1), bias=False)  # add minibatch std layer
         self.dense_out = Dense_layer(512 * 4 * 4, nf(0))
         self.label_out = Dense_layer(nf(0), max(label_size, 1))
 
@@ -136,7 +132,7 @@ class Discriminator(nn.Module):
             f"(D) channel unmatched. {images_in.shape[1]} v.s. {self.img_channels}"
 
         x = skip = None
-        if self.arch == 'resnet':
+        if self.architecture == 'resnet':
             x = self.frgb(images_in)
         else:
             skip = images_in
