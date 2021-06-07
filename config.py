@@ -20,6 +20,11 @@ _C.DATASET.MEAN = [0.5, 0.5, 0.5]
 _C.DATASET.STD = [0.5, 0.5, 0.5]
 _C.DATASET.LOAD_IN_MEM = False
 _C.DATASET.FLIP = True
+_C.DATASET.ADA = False
+_C.DATASET.ADA_TARGET = 0.6
+_C.DATASET.ADA_P = 0
+_C.DATASET.ADA_INTERVAL = 4
+_C.DATASET.ADA_KIMG = 500
 
 _C.MODEL = CN()
 _C.MODEL.N_MLP = 8
@@ -52,6 +57,20 @@ _C.EVAL.FID.BATCH_SIZE = 32
 _C.EVAL.FID.N_SAMPLE = 50000
 _C.EVAL.FID.INCEPTION_CACHE = "inception_cache.pkl"
 _C.EVAL.FID.SAMPLE_DIR = ""
+
+_C.ADA = CN()
+_C.ADA.xflip = 1
+_C.ADA.rotate90 = 1
+_C.ADA.xint = 1
+_C.ADA.scale = 1
+_C.ADA.rotate = 1
+_C.ADA.aniso = 1
+_C.ADA.xfrac = 1
+_C.ADA.brightness = 1
+_C.ADA.contrast = 1
+_C.ADA.lumaflip = 1
+_C.ADA.hue = 1
+_C.ADA.saturation = 1
 
 
 def get_cfg_defaults():
