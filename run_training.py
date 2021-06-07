@@ -19,6 +19,7 @@ import misc
 from config import get_cfg_defaults, convert_to_dict
 from dataset import get_dataset, get_dataloader, ResamplingDataset
 from models import Generator, Discriminator
+from augment import AugmentPipe
 from losses import nonsaturating_loss, path_regularize, logistic_loss, d_r1_loss, MaskedRecLoss
 from metrics.fid import FIDTracker
 
@@ -106,6 +107,10 @@ class Trainer():
         # Define losses
         self.rec_loss = MaskedRecLoss(mask='gaussian', num_channels=1, device=self.device)
 
+        if cfg.DATASET.ADA:
+            self.augment_pipe = AugmentPipe(**convert_to_dict(cfg.ADA)).train().requires_grad_(False).to(self.device)
+            self.augment_pipe.p.copy_(torch.as_tensor(cfg.DATASET.ADA_P))
+
         # Define optimizers
         g_reg_ratio = cfg.TRAIN.G_REG_EVERY / (cfg.TRAIN.G_REG_EVERY + 1)
         d_reg_ratio = cfg.TRAIN.D_REG_EVERY / (cfg.TRAIN.D_REG_EVERY + 1)
@@ -164,6 +169,8 @@ class Trainer():
         mean_path_length = 0
         loss_keys = ['g', 'd', 'g_rec', 'real_score', 'fake_score', 'mean_path', 'r1', 'path', 'path_length']
         loss_dict = OrderedDict((k, torch.tensor(0.0, dtype=torch.float, device=self.device)) for k in loss_keys)
+        if cfg_d.ADA and (cfg_d.ADA_TARGET) > 0:
+            ada_moments = torch.zeros([2], device=self.device)  # [num_scalars, sum_of_scalars]
 
         # To make state_dict consistent in mutli nodes & single node training
         g_module = self.g.module if self.ddp else self.g
@@ -188,6 +195,9 @@ class Trainer():
             fake_img, _ = self.g(noise, labels_in=fake_label, style_in=face_imgs, content_in=masked_body)
             fake_pred = self.d(fake_img)
             real_pred = self.d(body_imgs)
+            if cfg_d.ADA and (cfg_d.ADA_TARGET) > 0:
+                ada_moments[0].add_(torch.ones_like(real_pred).sum())
+                ada_moments[1].add_(real_pred.sign().detach().flatten().sum())
 
             d_loss = logistic_loss(real_pred, fake_pred)
 
@@ -249,6 +259,14 @@ class Trainer():
                 loss_dict['mean_path'] = mean_path_length
 
             accumulate(self.g_ema, g_module, ema_beta)
+
+            # Execute ADA heuristic.
+            if cfg_d.ADA and (cfg_d.ADA_TARGET) > 0 and (i % cfg_d.ADA_INTERVAL == 0):
+                ada_moments = torch.distributed.all_reduce(ada_moments)
+                ada_sign = ada_moments[1] / ada_moments[0]
+                adjust = np.sign(ada_sign - cfg_d.ADA_TARGET) * (self.batch_size * cfg_d.ADA_INTERVAL) / (cfg_d.ADA_KIMG * 1000)
+                self.augment_pipe.p.copy_((self.augment_pipe.p + adjust).max(misc.constant(0, device=self.device)))
+                ada_moments = torch.zeros_like(ada_moments)
 
             if self.fid_tracker is not None and (i == 0 or (i + 1) % self.cfg.EVAL.FID.EVERY == 0):
                 k_iter = (i + 1) / 1000
