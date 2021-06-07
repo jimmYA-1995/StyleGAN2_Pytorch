@@ -171,6 +171,7 @@ class Trainer():
         loss_dict = OrderedDict((k, torch.tensor(0.0, dtype=torch.float, device=self.device)) for k in loss_keys)
         if cfg_d.ADA and (cfg_d.ADA_TARGET) > 0:
             ada_moments = torch.zeros([2], device=self.device)  # [num_scalars, sum_of_scalars]
+            ada_sign = 0.0
 
         # To make state_dict consistent in mutli nodes & single node training
         g_module = self.g.module if self.ddp else self.g
@@ -262,10 +263,10 @@ class Trainer():
 
             # Execute ADA heuristic.
             if cfg_d.ADA and (cfg_d.ADA_TARGET) > 0 and (i % cfg_d.ADA_INTERVAL == 0):
-                ada_moments = torch.distributed.all_reduce(ada_moments)
-                ada_sign = ada_moments[1] / ada_moments[0]
+                torch.distributed.all_reduce(ada_moments)
+                ada_sign = (ada_moments[1] / ada_moments[0]).cpu().numpy()
                 adjust = np.sign(ada_sign - cfg_d.ADA_TARGET) * (self.batch_size * cfg_d.ADA_INTERVAL) / (cfg_d.ADA_KIMG * 1000)
-                self.augment_pipe.p.copy_((self.augment_pipe.p + adjust).max(misc.constant(0, device=self.device)))
+                self.augment_pipe.p.copy_(nn.functional.relu(self.augment_pipe.p + adjust))  # torch 1.4 has no Tenosr.maximum
                 ada_moments = torch.zeros_like(ada_moments)
 
             if self.fid_tracker is not None and (i == 0 or (i + 1) % self.cfg.EVAL.FID.EVERY == 0):
@@ -304,7 +305,7 @@ class Trainer():
                         os.remove(ckpt_dir / f'ckpt-{str(ckpt_idx[0]).zfill(digits_length)}.pt')
 
                 if wandb and self.use_wandb:
-                    wandb.log({
+                    stats = {
                         'training time': time() - s,
                         'Generator': reduced_loss['g'],
                         'G-reconstruction': reduced_loss['g_rec'],
@@ -315,7 +316,12 @@ class Trainer():
                         'Mean Path Length': reduced_loss['mean_path'],
                         'Real Score': reduced_loss['real_score'],
                         'Fake Score': reduced_loss['fake_score'],
-                    })
+                    }
+
+                    if cfg_d.ADA:
+                        stats['Real Sign'] = float(ada_sign)
+
+                    wandb.log(stats)
 
                 pbar.set_description(
                     "d: {d:.4f}; g: {g:.4f}; g_rec: {g_rec:.4f}; r1: {r1:.4f}; path: {path:.4f}; mean path: {mean_path:.4f}".format(**reduced_loss)
