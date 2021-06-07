@@ -91,9 +91,9 @@ class Trainer():
             label_size,
             cfg.RESOLUTION,
             embedding_size=cfg.MODEL.EMBEDDING_SIZE,
-            dlatent_size=400,
+            dlatent_dim=400,
             extra_channels=cfg.MODEL.EXTRA_CHANNEL,
-            is_training=True
+            # is_training=True
         ).to(self.device)
 
         self.d = Discriminator(
@@ -364,7 +364,8 @@ class Trainer():
         cfg = self.cfg.DATASET
         with torch.no_grad():
             self.g_ema.eval()
-            samples, _ = self.g_ema([self.sample.z], labels_in=self.sample.label, style_in=self.sample.face_imgs, content_in=self.sample.masked_body)
+            samples, _ = self.g_ema([self.sample.z], labels_in=self.sample.label, noise_mode='const',
+                                    style_in=self.sample.face_imgs, content_in=self.sample.masked_body)
             b, c, h, w = samples.shape
             if cfg.DATASET == 'MultiChannelDataset':
                 assert c == sum(cfg.CHANNELS)

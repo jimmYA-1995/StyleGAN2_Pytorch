@@ -242,7 +242,7 @@ class FIDTracker():
                 if self.cond_samples is not None:
                     cond_samples = self.cond_samples[:batch]
 
-                imgs, _ = generator([latent], labels_in=fake_label, style_in=face_imgs, content_in=masked_body)
+                imgs, _ = generator([latent], labels_in=fake_label, style_in=face_imgs, content_in=masked_body, noise_mode='const')
                 # if self.rank == 0:
                 #     utils.save_image(
                 #         imgs,
