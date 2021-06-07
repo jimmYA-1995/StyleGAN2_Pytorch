@@ -61,7 +61,11 @@ def constant(value, shape=None, dtype=None, device=None, memory_format=None):
 try:
     symbolic_assert = torch._assert # 1.8.0a0 # pylint: disable=protected-access
 except AttributeError:
-    symbolic_assert = torch.Assert # 1.7.0
+    try:
+        symbolic_assert = torch.Assert # 1.7.0
+    except AttributeError:
+        def symbolic_assert(boolean, msg):
+            assert boolean, msg
 
 #----------------------------------------------------------------------------
 # Context manager to suppress known warnings in torch.jit.trace().
