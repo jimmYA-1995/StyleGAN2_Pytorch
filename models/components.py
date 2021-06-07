@@ -285,19 +285,19 @@ class G_synthesis_stylegan2(nn.Module):
         content_ch = 4
         face_style_dim = 112
         dlatent_dim += face_style_dim
-        self.input = Parameter(torch.randn((1, nf(1), 4, 4)))
+        self.input = Parameter(torch.randn((1, nf(1) // 2, 4, 4)))
         self.style_encoder = style_encoder(res_log2, 2, 3, face_style_dim)
         self.ContentEncoder = ContentEncoder(res_log2, 2, content_ch, nf(1) // 2)
-        self.bottom_layer = Layer(int(nf(1)), int(nf(1)), dlatent_dim, 4, resample_filter=resample_filter)
-        self.trgbs.append(ToRGB(int(nf(1)), img_channels, dlatent_dim, resample_filter=resample_filter))
+        self.bottom_layer = Layer(int(nf(1)), int(nf(1) // 2), dlatent_dim, 4, resample_filter=resample_filter)
+        self.trgbs.append(ToRGB(int(nf(1) // 2), img_channels, dlatent_dim, resample_filter=resample_filter))
 
         # main layers
         self.convs = nn.ModuleList()
 
-        in_channels = int(nf(1))
+        in_channels = int(nf(1) // 2)
         for res in range(3, self.res_log2 + 1):
             fmaps = int(nf(res - 1))
-            fmaps1 = fmaps if res == self.res_log2 else nf(res - 1)
+            fmaps1 = fmaps if res == self.res_log2 else int(nf(res - 1) // 2)
             self.convs.extend([
                 Layer(in_channels, fmaps1, dlatent_dim, 2 ** res, mode='up', resample_filter=resample_filter),
                 Layer(fmaps, fmaps, dlatent_dim, 2 ** res, resample_filter=resample_filter)
