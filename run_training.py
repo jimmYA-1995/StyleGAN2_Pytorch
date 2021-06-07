@@ -195,12 +195,11 @@ class Trainer():
             fake_label = torch.randint(self.num_classes, (self.batch_size,)).to(self.device) if self.num_classes > 1 else None
             fake_img, _ = self.g(noise, labels_in=fake_label, style_in=face_imgs, content_in=masked_body)
 
-            if cfg_d.ADA:
-                fake_img = self.augment_pipe(fake_img)
-                body_imgs = self.augment_pipe(body_imgs)
+            aug_fake_img = self.augment_pipe(fake_img) if cfg_d.ADA else fake_img
+            aug_body_imgs = self.augment_pipe(body_imgs) if cfg_d.ADA else body_imgs
 
-            fake_pred = self.d(fake_img)
-            real_pred = self.d(body_imgs)
+            fake_pred = self.d(aug_fake_img)
+            real_pred = self.d(aug_body_imgs)
 
             if cfg_d.ADA and (cfg_d.ADA_TARGET) > 0:
                 ada_moments[0].add_(torch.ones_like(real_pred).sum())
@@ -217,11 +216,9 @@ class Trainer():
             self.d_optim.step()
 
             if i % cfg_t.D_REG_EVERY == 0:
-                body_imgs.requires_grad = True
-                if cfg_d.ADA:
-                    body_imgs = self.augment_pipe(body_imgs)
-                real_pred = self.d(body_imgs)
-                r1_loss = d_r1_loss(real_pred, body_imgs)
+                aug_body_imgs.requires_grad = True
+                real_pred = self.d(aug_body_imgs)
+                r1_loss = d_r1_loss(real_pred, aug_body_imgs)
 
                 self.d.zero_grad()
                 (cfg_t.R1 / 2 * r1_loss * cfg_t.D_REG_EVERY + 0 * real_pred[0]).backward()
@@ -234,9 +231,9 @@ class Trainer():
             noise = mixing_noise(self.batch_size, self.latent, cfg_t.STYLE_MIXING_PROB, self.device)
             fake_label = torch.randint(self.num_classes, (self.batch_size,)).to(self.device) if self.num_classes > 1 else None
             fake_img, _ = self.g(noise, labels_in=fake_label, style_in=face_imgs, content_in=masked_body)
-            if cfg_d.ADA:
-                fake_img = self.augment_pipe(fake_img)
-            fake_pred = self.d(fake_img)
+            
+            aug_fake_img = self.augment_pipe(fake_img) if cfg_d.ADA else fake_img
+            fake_pred = self.d(aug_fake_img)
             g_loss = nonsaturating_loss(fake_pred)
             g_rec_loss = self.rec_loss(body_imgs, fake_img, mask=mask)
             loss_dict['g'] = g_loss
