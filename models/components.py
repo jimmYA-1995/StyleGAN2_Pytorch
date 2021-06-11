@@ -307,28 +307,31 @@ class G_synthesis_stylegan2(nn.Module):
             in_channels = fmaps
 
     def forward(self, dlatents_in, style_in=None, content_in=None, **layer_kwargs):
-        tile_in = self.input.repeat(dlatents_in.shape[0], 1, 1, 1)
-        content_encoding = self.ContentEncoder(content_in)
-        style_encoding = self.style_encoder(style_in)
-        tile_in = torch.cat([tile_in, content_encoding[-1]], dim=1)
+        with torch.autograd.profiler.record_function("Content encoder"):
+            tile_in = self.input.repeat(dlatents_in.shape[0], 1, 1, 1)
+            content_encoding = self.ContentEncoder(content_in)
+            tile_in = torch.cat([tile_in, content_encoding[-1]], dim=1)
 
-        style_encoding = style_encoding.squeeze().unsqueeze(1).repeat(1, dlatents_in.shape[1], 1)
-        dlatents_in = torch.cat([style_encoding, dlatents_in], dim=2)
+        with torch.autograd.profiler.record_function("Style encoder"):
+            style_encoding = self.style_encoder(style_in)
+            style_encoding = style_encoding.flatten(1).unsqueeze(1).repeat(1, dlatents_in.shape[1], 1)  # [N, w_broadcast, w_dim]
+            dlatents_in = torch.cat([style_encoding, dlatents_in], dim=2)
 
-        x = self.bottom_layer(tile_in, dlatents_in[:, 0], **layer_kwargs)
-        if self.architecture == 'skip':
-            skip = self.trgbs[0](x, dlatents_in[:, 1])
+        with torch.autograd.profiler.record_function("Synthesis Main"):
+            x = self.bottom_layer(tile_in, dlatents_in[:, 0], **layer_kwargs)
+            if self.architecture == 'skip':
+                skip = self.trgbs[0](x, dlatents_in[:, 1])
 
-        # main layer
-        for res in range(3, self.res_log2 + 1):
-            x = self.convs[res * 2 - 6](x, dlatents_in[:, res * 2 - 5], **layer_kwargs)
-            if res < self.res_log2:
-                x = torch.cat([x, content_encoding[7 - res]], dim=1)
-            x = self.convs[res * 2 - 5](x, dlatents_in[:, res * 2 - 4], **layer_kwargs)
+            # main layer
+            for res in range(3, self.res_log2 + 1):
+                x = self.convs[res * 2 - 6](x, dlatents_in[:, res * 2 - 5], **layer_kwargs)
+                if res < self.res_log2:
+                    x = torch.cat([x, content_encoding[7 - res]], dim=1)
+                x = self.convs[res * 2 - 5](x, dlatents_in[:, res * 2 - 4], **layer_kwargs)
 
-            if self.architecture == 'skip' or res == self.res_log2:
-                skip = self.trgbs[res - 2](x, dlatents_in[:, res * 2 - 3], skip=skip)
-        images_out = skip
+                if self.architecture == 'skip' or res == self.res_log2:
+                    skip = self.trgbs[res - 2](x, dlatents_in[:, res * 2 - 3], skip=skip)
+            images_out = skip
 
         return images_out
 

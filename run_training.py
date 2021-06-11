@@ -250,16 +250,22 @@ class Trainer():
                 noise = mixing_noise(path_batch_size, self.latent, cfg_t.STYLE_MIXING_PROB, self.device)
                 fake_label = (torch.randint(self.num_classes, (path_batch_size,)).to(self.device)
                               if self.num_classes > 0 else None)
-                fake_img, latents = self.g(
-                    noise, labels_in=fake_label, style_in=face_imgs[:path_batch_size], content_in=masked_body[:path_batch_size], return_latents=True)
 
-                path_loss, mean_path_length, path_lengths = path_regularize(fake_img, latents, mean_path_length)
-                weighted_path_loss = cfg_t.PATH_REGULARIZE * cfg_t.G_REG_EVERY * path_loss
+                with torch.autograd.profiler.profile(with_stack=True, profile_memory=True) as prof:
+                    fake_img, latents = self.g(
+                        noise, labels_in=fake_label, style_in=face_imgs[:path_batch_size], content_in=masked_body[:path_batch_size], return_latents=True)
+
+                    path_loss, mean_path_length, path_lengths = path_regularize(fake_img, latents, mean_path_length)
+                    weighted_path_loss = cfg_t.PATH_REGULARIZE * cfg_t.G_REG_EVERY * path_loss
+
+                print(prof.key_averages().table())
 
                 if cfg_t.PATH_BATCH_SHRINK:
                     weighted_path_loss += 0 * fake_img[0, 0, 0, 0]
 
-                weighted_path_loss.backward()
+                with torch.autograd.profiler.profile(with_stack=True, profile_memory=True) as prof:
+                    weighted_path_loss.backward()
+                print(prof.key_averages().table())
                 self.g_optim.step()
 
                 loss_dict['path'] = path_loss
@@ -270,7 +276,8 @@ class Trainer():
 
             # Execute ADA heuristic.
             if cfg_d.ADA and (cfg_d.ADA_TARGET) > 0 and (i % cfg_d.ADA_INTERVAL == 0):
-                torch.distributed.all_reduce(ada_moments)
+                if self.num_gpus > 1:
+                    torch.distributed.all_reduce(ada_moments)
                 ada_sign = (ada_moments[1] / ada_moments[0]).cpu().numpy()
                 adjust = np.sign(ada_sign - cfg_d.ADA_TARGET) * (self.batch_size * cfg_d.ADA_INTERVAL) / (cfg_d.ADA_KIMG * 1000)
                 self.augment_pipe.p.copy_(nn.functional.relu(self.augment_pipe.p + adjust))  # torch 1.4 has no Tenosr.maximum
