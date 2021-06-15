@@ -73,12 +73,12 @@ class Trainer():
         random_seed = 1234
         np.random.seed(random_seed * args.num_gpus + args.local_rank)
         torch.manual_seed(random_seed * args.num_gpus + args.local_rank)
-        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.benchmark = args.cudnn_benchmark
         # torch.backends.cuda.matmul.allow_tf32 = allow_tf32  # Allow PyTorch to internally use tf32 for matmul
         # torch.backends.cudnn.allow_tf32 = allow_tf32        # Allow PyTorch to internally use tf32 for convolutions
-        if any(torch.__version__.startswith(x) for x in ['1.7.', '1.8.', '1.9']):
-            conv2d_gradfix.enabled = False
-            grid_sample_gradfix.enabled = False                  # Avoids errors with the augmentation pipe.
+        if True and any(torch.__version__.startswith(x) for x in ['1.7.', '1.8.', '1.9']):
+            conv2d_gradfix.enabled = True
+        grid_sample_gradfix.enabled = True  # Avoids errors with the augmentation pipe.
 
         # Datset
         if self.local_rank == 0:
@@ -345,6 +345,7 @@ class Trainer():
                     wandb.log(wandb_stats)
 
                 if pbar is None:
+                    print(f"1st iter: {time() - s} sec")
                     pbar = tqdm(total=cfg_t.iteration, initial=i, dynamic_ncols=True, smoothing=0, colour='yellow')
 
                 pbar.update(1)
@@ -419,6 +420,8 @@ if __name__ == '__main__':
     parser.add_argument('-o', '--out_dir', metavar='PATH',
                         help="path to output directory. If not set, auto. set to subdirectory of outdir in configuration")
     parser.add_argument('--local_rank', type=int, default=0, metavar='INT', help='Automatically given by %(prog)s')
+    parser.add_argument('--nobench', default=True, action='store_false', dest='cudnn_benchmark',
+                        help='disable cuDNN benchmarking')
     parser.add_argument('--debug', action='store_true')
     parser.add_argument('--wandb', action='store_true')
     args = parser.parse_args()
