@@ -4,59 +4,74 @@ from yacs.config import CfgNode as CN
 _VALID_TYPES = {tuple, list, str, int, float, bool}
 
 _C = CN()
-_C.DESCRIPTION = ''
-_C.OUT_DIR = 'results'
-_C.N_SAMPLE = 64
-_C.RESOLUTION = 256
-_C.N_CLASSES = 0
+_C.description = ''
+_C.outdir = 'results'
+_C.n_sample = 64
+_C.resolution = 256
+_C.num_classes = 0
 
+# ------ dataset ------
 _C.DATASET = CN()
-_C.DATASET.WORKERS = 4
-_C.DATASET.DATASET = 'MultiChannelDataset'
-_C.DATASET.ROOTS = ['/root/notebooks/data/mpii']
-_C.DATASET.SOURCE = ['images']
-_C.DATASET.CHANNELS = [3]
-_C.DATASET.MEAN = [0.5, 0.5, 0.5]
-_C.DATASET.STD = [0.5, 0.5, 0.5]
-_C.DATASET.LOAD_IN_MEM = False
-_C.DATASET.FLIP = True
+_C.DATASET.workers = 4
+_C.DATASET.dataset = 'MultiChannelDataset'
+_C.DATASET.roots = ['/root/notebooks/data/mpii']
+_C.DATASET.source = ['images']
+_C.DATASET.channels = [3]
+_C.DATASET.mean = [0.5, 0.5, 0.5]
+_C.DATASET.std = [0.5, 0.5, 0.5]
+_C.DATASET.pin_memory = False
+_C.DATASET.xflip = True
 _C.DATASET.ADA = False
-_C.DATASET.ADA_TARGET = 0.6
-_C.DATASET.ADA_P = 0
-_C.DATASET.ADA_INTERVAL = 4
-_C.DATASET.ADA_KIMG = 500
+_C.DATASET.ADA_target = 0.6
+_C.DATASET.ADA_p = 0
+_C.DATASET.ADA_interval = 4
+_C.DATASET.ADA_kimg = 500
 
+# ------ Model ------
 _C.MODEL = CN()
-_C.MODEL.N_MLP = 8
-_C.MODEL.LATENT_SIZE = 512
-_C.MODEL.CHANNEL_MULTIPLIER = 2
-_C.MODEL.EMBEDDING_SIZE = 0
-_C.MODEL.EXTRA_CHANNEL = 2
+_C.MODEL.z_dim = 512
+# _C.MODEL.CHANNEL_MULTIPLIER = 2
+_C.MODEL.extra_channel = 0
+_C.MODEL.use_style_encoder = False
 
+_C.MODEL.G_MAP = CN()
+_C.MODEL.G_MAP.embed_dim = 0
+_C.MODEL.G_MAP.dlatent_dim = 512
+_C.MODEL.G_MAP.num_layer = 8
+_C.MODEL.G_MAP.num_channel = 512
+_C.MODEL.G_MAP.lrmul = 0.01
+
+_C.MODEL.STYLE_ENCODER = CN()
+_C.MODEL.STYLE_ENCODER.nf_in = 3
+_C.MODEL.STYLE_ENCODER.max_nf = 256
+_C.MODEL.STYLE_ENCODER.dlatent_dim = 256
+
+_C.MODEL.G_SYNTHESIS = CN()
+_C.MODEL.G_SYNTHESIS.fmap_base = 16384
+_C.MODEL.G_SYNTHESIS.fmap_decay = 1.0
+_C.MODEL.G_SYNTHESIS.fmap_min = 1
+_C.MODEL.G_SYNTHESIS.fmap_max = 512
+_C.MODEL.G_SYNTHESIS.use_content_encoder = False
+
+_C.MODEL.G_SYNTHESIS.content_encoder_kwargs = CN()
+_C.MODEL.G_SYNTHESIS.content_encoder_kwargs.nf_in = 3
+_C.MODEL.G_SYNTHESIS.content_encoder_kwargs.max_nf = 512
+
+# ----- training ------
 _C.TRAIN = CN()
-_C.TRAIN.ITERATION = 80000
-_C.TRAIN.BATCH_SIZE_PER_GPU = 16
-_C.TRAIN.LR = 0.002
-_C.TRAIN.R1 = 10
-_C.TRAIN.PATH_REGULARIZE = 2
-_C.TRAIN.PATH_BATCH_SHRINK = 2
-_C.TRAIN.G_REG_EVERY = 4
-_C.TRAIN.D_REG_EVERY = 16
-_C.TRAIN.STYLE_MIXING_PROB = 0.9
-_C.TRAIN.NV_WEIGHTS_PATH = ''
-_C.TRAIN.CKPT = ''
-_C.TRAIN.SAVE_CKPT_EVERY = 2500
-_C.TRAIN.CKPT_MAX_KEEP = 10
-_C.TRAIN.SAMPLE_EVERY = 1000
-
-_C.EVAL = CN()
-_C.EVAL.METRICS = ""
-_C.EVAL.FID = CN()
-_C.EVAL.FID.EVERY = 0
-_C.EVAL.FID.BATCH_SIZE = 32
-_C.EVAL.FID.N_SAMPLE = 50000
-_C.EVAL.FID.INCEPTION_CACHE = "inception_cache.pkl"
-_C.EVAL.FID.SAMPLE_DIR = ""
+_C.TRAIN.iteration = 80000
+_C.TRAIN.batch_gpu = 16
+_C.TRAIN.lrate = 0.002
+_C.TRAIN.r1 = 10
+_C.TRAIN.path_reg_gain = 2
+_C.TRAIN.path_bs_shrink = 2
+_C.TRAIN.Greg_every = 4
+_C.TRAIN.Dreg_every = 16
+_C.TRAIN.style_mixing_prob = 0.9
+_C.TRAIN.ckpt = ''
+_C.TRAIN.save_ckpt_every = 2500
+_C.TRAIN.ckpt_max_keep = 10
+_C.TRAIN.sample_every = 1000
 
 _C.ADA = CN()
 _C.ADA.xflip = 1
@@ -71,6 +86,16 @@ _C.ADA.contrast = 1
 _C.ADA.lumaflip = 1
 _C.ADA.hue = 1
 _C.ADA.saturation = 1
+
+# ------ evaluation ------
+_C.EVAL = CN()
+_C.EVAL.metrics = ""
+_C.EVAL.FID = CN()
+_C.EVAL.FID.every = 0
+_C.EVAL.FID.batch_size = 32
+_C.EVAL.FID.n_sample = 50000
+_C.EVAL.FID.inception_cache = "inception_cache.pkl"
+_C.EVAL.FID.sample_dir = ""
 
 
 def get_cfg_defaults():

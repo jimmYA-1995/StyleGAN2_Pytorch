@@ -3,8 +3,8 @@ test/
 data/
 *.png
 results/
-experiments/
 !experiments/default.yml
+experiments/
 checkpoints/
 wandb/
 *.out

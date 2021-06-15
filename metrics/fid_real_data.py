@@ -46,7 +46,7 @@ class FIDTracker():
     def __init__(self, config, output_dir, use_tqdm=False):
 
         fid_config = config.EVAL.FID
-        inception_path = fid_config.INCEPTION_CACHE
+        inception_path = fid_config.inception_cache
 
         self.device = 'cuda'
         self.config = fid_config
@@ -58,18 +58,18 @@ class FIDTracker():
         self.real_mean = None # ndarray(n_class, 2048) float32
         self.real_cov = None # ndarray(n_class, 2048, 2048) float64
         self.fids = []
-        self.conditional = True if config.N_CLASSES > 1 else False 
-        self.num_classes = config.N_CLASSES
+        self.conditional = True if config.num_classes > 1 else False 
+        self.num_classes = config.num_classes
         self.cond_samples = None
-        self.n_batch = fid_config.N_SAMPLE // fid_config.BATCH_SIZE
-        self.resid = fid_config.N_SAMPLE % fid_config.BATCH_SIZE
+        self.n_batch = fid_config.n_sample // fid_config.batch_size
+        self.resid = fid_config.n_sample % fid_config.batch_size
         self.idx_iterator = range(self.n_batch + 1)
         self.use_tqdm = use_tqdm
-        self.model_bs = config.N_SAMPLE
-        if fid_config.SAMPLE_DIR:
-            self.cond_samples = load_condition_sample(fid_config.SAMPLE_DIR, self.model_bs)
+        self.model_bs = config.n_sample
+        if fid_config.sample_dir:
+            self.cond_samples = load_condition_sample(fid_config.sample_dir, self.model_bs)
             self.cond_samples = self.cond_samples.to(self.device)
-            self.logger.info(f"using smaple directory: {fid_config.SAMPLE_DIR}. \
+            self.logger.info(f"using smaple directory: {fid_config.sample_dir}. \
                                 Get {self.cond_samples.shape[0]} conditional sample")
             self.model_bs = self.cond_samples.shape[0]
 
@@ -130,8 +130,8 @@ class FIDTracker():
 
     @torch.no_grad()
     def extract_feature_from_real_images(self, config):
-        dataloaders, idx_to_class = get_dataloader_for_each_class(config, self.config.BATCH_SIZE)
-        assert self.num_classes == len(idx_to_class), f"N_CLASSES({self.num_classes}) in user config not equal to #class({len(idx_to_class)}) in dataset"
+        dataloaders, idx_to_class = get_dataloader_for_each_class(config, self.config.batch_size)
+        assert self.num_classes == len(idx_to_class), f"num_classes({self.num_classes}) in user config not equal to #class({len(idx_to_class)}) in dataset"
         start = time.time()
         
         real_mean_list = []
@@ -144,7 +144,7 @@ class FIDTracker():
             
             idx_iterator = tqdm(self.idx_iterator) if self.use_tqdm else self.idx_iterator
             for i in idx_iterator:
-                batch = self.resid if i==self.n_batch else self.config.BATCH_SIZE
+                batch = self.resid if i==self.n_batch else self.config.batch_size
                 if batch == 0:
                     continue
 
@@ -164,47 +164,6 @@ class FIDTracker():
             
         return real_mean_list, real_cov_list, idx_to_class
 
-#     @torch.no_grad()
-#     def extract_feature_from_model(self, generator):
-#         n_batch = self.config.N_SAMPLE // self.model_bs
-#         resid = self.config.N_SAMPLE % self.model_bs
-#         features_list = []
-        
-#         for class_idx in range(self.num_classes):
-#             features = []
-#             idx_iterator = range(n_batch + 1)
-#             if self.use_tqdm:
-#                 idx_iterator = tqdm(idx_iterator)
-
-#             for i in idx_iterator:
-#                 batch = resid if i==n_batch else self.model_bs
-#                 if batch == 0:
-#                     continue
-
-#                 latent = torch.randn(batch, 512, device=self.device)
-#                 fake_label = torch.LongTensor([class_idx]*batch).to(self.device)
-                
-#                 cond_samples=None
-#                 if self.cond_samples is not None:
-#                     cond_samples = self.cond_samples[:batch]
-
-#                 img, _ = generator([latent], labels_in=fake_label, sk=cond_samples)
-#                 feature = self.inceptionV3(img[:, :3, :, :])[0].view(img.shape[0], -1)
-#                 features.append(feature.to('cpu'))
-
-#             features_list.append(torch.cat(features, 0).numpy())
-#         return features_list
-    
-#     def plot_fid(self,):
-#         self.logger.info(f"save FID figure in {str(self.output_path / 'fid.png')}")
-        
-#         self.fids = np.array(self.fids).T
-#         plt.xlabel('k iterations')
-#         plt.ylabel('FID')
-#         for fids in self.fids:
-#             plt.plot(self.k_iters, fids)
-#         plt.legend([self.idx_to_class[idx] for idx in range(self.num_classes)], loc='upper right')
-#         plt.savefig(self.output_path / 'fid.png')
 
 
 if __name__ == '__main__':

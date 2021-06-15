@@ -18,7 +18,7 @@ ALLOW_EXTS = ['jpg', 'jpeg', 'png', 'JPEG']
 
 class MultiResolutionDataset(data.Dataset):
     def __init__(self, config, resolution, transform=None):
-        path = config.ROOTS[0]
+        path = config.roots[0]
         self.env = lmdb.open(
             path,
             max_readers=32,
@@ -65,7 +65,7 @@ def ImageFolderDataset(config, resolution, transform=None):
             return True
         return False
 
-    return ImageFolder(config.ROOTS[0], transform=transform, loader=image_loader, is_valid_file=check_valid)
+    return ImageFolder(config.roots[0], transform=transform, loader=image_loader, is_valid_file=check_valid)
 
 
 def load_images_and_concat(path, resolution, sources, channel_info=None, flip=False):
@@ -104,20 +104,20 @@ class MultiChannelDataset(data.Dataset):
     def __init__(self, config, resolution, transform=None, **kwargs):
         from torchvision import get_image_backend
         assert get_image_backend() == 'PIL'
-        assert len(config.SOURCE) == len(config.CHANNELS), \
+        assert len(config.source) == len(config.channels), \
             f"the numbers of sources and channels don't match."
 
-        self.roots = config.ROOTS
+        self.roots = config.roots
         self.transform = transform
         self.target_transform = None
         self.loader = partial(load_images_and_concat,
                               resolution=resolution,
-                              sources=config.SOURCE,
-                              channel_info=config.CHANNELS)
+                              sources=config.source,
+                              channel_info=config.channels)
         self.load_in_mem = config.LOAD_IN_MEM
-        self.flip = config.FLIP
+        self.flip = config.xflip
 
-        sources = config.SOURCE
+        sources = config.source
         self.img_paths = []
         for root in self.roots:
             root = Path(root)
@@ -181,7 +181,7 @@ class GenericDataset(data.Dataset):
     def __init__(self, config, resolution, transform=None, split='train', **kwargs):
         self.paths = []
         for ext in ALLOW_EXTS:
-            self.paths += sorted(list((Path(config.ROOTS[0]) / split).glob(f"*.{ext}")))
+            self.paths += sorted(list((Path(config.roots[0]) / split).glob(f"*.{ext}")))
         self.config = config
         self.resolution = resolution
         self.transform = transform
@@ -205,7 +205,7 @@ class DeepFashionDataset(GenericDataset):
         h2 = w2 = (load_size + self.resolution) // 2
 
         img = Image.open(self.paths[idx])
-        assert (img.mode == 'RGBA' and cfg.CHANNELS[0] == 4) ^ (img.mode == 'RGB' and cfg.CHANNELS[0] == 3), \
+        assert (img.mode == 'RGBA' and cfg.channels[0] == 4) ^ (img.mode == 'RGB' and cfg.channels[0] == 3), \
             "image channel is not consistent, please check your config"
 
         img_np = np.asarray(img.convert('RGB').resize((load_size * 2, load_size), Image.ANTIALIAS))
@@ -231,16 +231,16 @@ class DeepFashionDataset(GenericDataset):
 
 class ResamplingDataset(data.Dataset):
     def __init__(self, cfg, resolution):
-        assert (Path(cfg.ROOTS[0]).parent / 'landmarks_statistics.pkl').exists()
-        assert (Path(cfg.ROOTS[0]).parent / 'stylegan2-ada-outputs').exists()
+        assert (Path(cfg.roots[0]).parent / 'landmarks_statistics.pkl').exists()
+        assert (Path(cfg.roots[0]).parent / 'stylegan2-ada-outputs').exists()
         trf = [
             transforms.ToTensor(),
-            transforms.Normalize(cfg.MEAN[:3], cfg.STD[:3], inplace=True),
+            transforms.Normalize(cfg.mean[:3], cfg.std[:3], inplace=True),
         ]
         self.transform = transforms.Compose(trf)
         self.tgt_size = resolution
-        statistics = pickle.load(open(Path(cfg.ROOTS[0]).parent / 'landmarks_statistics.pkl', 'rb'))
-        self.paths = sorted(list((Path(cfg.ROOTS[0]).parent / 'stylegan2-ada-outputs').glob('*.png')))
+        statistics = pickle.load(open(Path(cfg.roots[0]).parent / 'landmarks_statistics.pkl', 'rb'))
+        self.paths = sorted(list((Path(cfg.roots[0]).parent / 'stylegan2-ada-outputs').glob('*.png')))
         
         self.ori_size = statistics['resolution']
         self.V = statistics['V']
@@ -290,23 +290,24 @@ def data_sampler(dataset, shuffle, distributed):
 def get_dataset(config, resolution, split='train'):
     trf = [
         transforms.ToTensor(),
-        transforms.Normalize(config.MEAN, config.STD, inplace=True),
+        transforms.Normalize(config.mean, config.std, inplace=True),
     ]
     transform = transforms.Compose(trf)
-    Dataset = globals().get(config.DATASET)
+    Dataset = globals().get(config.dataset)
     dataset = Dataset(config, resolution, transform=transform, split=split)
     return dataset
 
 
 def get_dataloader(config, batch_size, n_workers=None, split='train', distributed=False):
-    dataset = get_dataset(config.DATASET, config.RESOLUTION, split=split)
+    dataset = get_dataset(config.DATASET, config.resolution, split=split)
     if n_workers is None:
-        n_workers = config.DATASET.WORKERS
+        n_workers = config.DATASET.workers
 
     loader = data.DataLoader(
         dataset,
         batch_size=batch_size,
         num_workers=n_workers,
+        pin_memory=config.DATASET.pin_memory,
         sampler=data_sampler(dataset, shuffle=True, distributed=distributed),
         drop_last=True,
     )
@@ -314,8 +315,8 @@ def get_dataloader(config, batch_size, n_workers=None, split='train', distribute
 
 
 def get_dataloader_for_each_class(config, batch_size, distributed=False):
-    dataset = get_dataset(config.DATASET, config.RESOLUTION)
-    data_root = Path(config.DATASET.ROOTS[0])
+    dataset = get_dataset(config.DATASET, config.resolution)
+    data_root = Path(config.DATASET.roots[0])
     dataloaders = []
     indices = list(range(len(dataset)))
     last_idx, cur_idx = 0, 0
@@ -326,7 +327,7 @@ def get_dataloader_for_each_class(config, batch_size, distributed=False):
         loader = data.DataLoader(
             dataset,
             batch_size=batch_size,
-            num_workers=config.DATASET.WORKERS,
+            num_workers=config.DATASET.workers,
             sampler=data.SubsetRandomSampler(indices[last_idx:cur_idx]),
             drop_last=True,
         )

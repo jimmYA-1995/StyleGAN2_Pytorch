@@ -81,7 +81,7 @@ def create_logger(local_rank, out_dir=None, debug=False, **kwargs):
 def prepare_training(args, cfg):
     """ populate necessary directories """
     if not args.out_dir:
-        root_dir = Path(cfg.OUT_DIR)
+        root_dir = Path(cfg.outdir)
         if not root_dir.exists():
             print('creating {}'.format(root_dir))
             root_dir.mkdir(parents=True)
