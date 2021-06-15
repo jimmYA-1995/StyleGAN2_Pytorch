@@ -202,7 +202,7 @@ def get_encoder(res_in, res_out, nf_in=3, max_nf=512, dlatent_dim=512):
     enc.append(Conv2d_layer(nf_in, dlatent_dim, kernel=1))
     enc.append(nn.AdaptiveAvgPool2d((1, 1)))
 
-    return nn.Squential(*enc)
+    return nn.Sequential(*enc)
 
 
 class ToRGB(nn.Module):

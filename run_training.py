@@ -16,6 +16,7 @@ from torch import nn, optim
 from torchvision import utils
 
 import misc
+from torch_utils.ops import conv2d_gradfix, grid_sample_gradfix
 from torch_utils.misc import print_module_summary
 from config import get_cfg_defaults, convert_to_dict
 from dataset import get_dataset, get_dataloader, ResamplingDataset
@@ -67,6 +68,17 @@ class Trainer():
         self.metrics = cfg.EVAL.metrics.split(',')
         self.fid_tracker = None
         self.sample = None
+
+        # general setting
+        random_seed = 1234
+        np.random.seed(random_seed * args.num_gpus + args.local_rank)
+        torch.manual_seed(random_seed * args.num_gpus + args.local_rank)
+        torch.backends.cudnn.benchmark = False
+        # torch.backends.cuda.matmul.allow_tf32 = allow_tf32  # Allow PyTorch to internally use tf32 for matmul
+        # torch.backends.cudnn.allow_tf32 = allow_tf32        # Allow PyTorch to internally use tf32 for convolutions
+        if any(torch.__version__.startswith(x) for x in ['1.7.', '1.8.', '1.9']):
+            conv2d_gradfix.enabled = False
+            grid_sample_gradfix.enabled = False                  # Avoids errors with the augmentation pipe.
 
         # Datset
         if self.local_rank == 0:
@@ -333,15 +345,17 @@ class Trainer():
                     wandb.log(wandb_stats)
 
                 if pbar is None:
-                    pbar = tqdm(total=cfg_t.iteration, initial=i, dynamic_ncols=True, smoothing=0, colour='green')
+                    pbar = tqdm(total=cfg_t.iteration, initial=i, dynamic_ncols=True, smoothing=0, colour='yellow')
 
                 pbar.update(1)
                 desc = "d: {d:.4f}; g: {g:.4f}; g_rec: {g_rec:.4f}; r1: {r1:.4f}; path: {path:.4f}; mean path: {mean_path:.4f}; ada_p: {ada_p:.1f}"
                 pbar.set_description(desc.format(**reduced_stats))
 
-        pbar.close()
-        if args.local_rank == 0 and self.fid_tracker:
-            self.fid_tracker.plot_fid()
+        if args.local_rank == 0:
+            pbar.close()
+
+            if self.fid_tracker:
+                self.fid_tracker.plot_fid()
 
     def _get_sample_data(self):
         cfg = self.cfg
