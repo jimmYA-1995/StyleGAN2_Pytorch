@@ -27,7 +27,7 @@ DATASET:
     - 1.0
   pin_memory: false
   # xflip: true
-  ADA: false  # disable ADA in ai-forge
+  ADA: false
   ADA_target: 0.6
   ADA_p: 0
   ADA_interval: 4
