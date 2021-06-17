@@ -14,6 +14,7 @@ import numpy as np
 from tqdm import tqdm
 from torch import nn, optim
 from torchvision import utils
+from torch.cuda.amp import autocast, GradScaler
 
 import misc
 from torch_utils.ops import conv2d_gradfix, grid_sample_gradfix
@@ -63,11 +64,12 @@ class Trainer():
         self.n_sample = cfg.n_sample
         self.num_classes = cfg.num_classes
         self.z_dim = cfg.MODEL.z_dim
-        self.batch_size = cfg.TRAIN.batch_gpu
+        self.batch_gpu = cfg.TRAIN.batch_gpu
         self.device = torch.device(f'cuda:{args.local_rank}')
         self.metrics = cfg.EVAL.metrics.split(',')
         self.fid_tracker = None
         self.sample = None
+        self.autocast = args.autocast
 
         # general setting
         random_seed = 1234
@@ -76,14 +78,17 @@ class Trainer():
         torch.backends.cudnn.benchmark = args.cudnn_benchmark
         # torch.backends.cuda.matmul.allow_tf32 = allow_tf32  # Allow PyTorch to internally use tf32 for matmul
         # torch.backends.cudnn.allow_tf32 = allow_tf32        # Allow PyTorch to internally use tf32 for convolutions
-        if True and any(torch.__version__.startswith(x) for x in ['1.7.', '1.8.', '1.9']):
+        if any(torch.__version__.startswith(x) for x in ['1.7.', '1.8.', '1.9']):
             conv2d_gradfix.enabled = True
         grid_sample_gradfix.enabled = True  # Avoids errors with the augmentation pipe.
+
+        self.g_scaler = GradScaler(enabled=args.gradscale)
+        self.d_scaler = GradScaler(enabled=args.gradscale)
 
         # Datset
         if self.local_rank == 0:
             self.log.info("get dataloader ...")
-        self.loader = get_dataloader(cfg, self.batch_size, distributed=self.ddp)
+        self.loader = get_dataloader(cfg, self.batch_gpu, distributed=self.ddp)
 
         # Define model
         label_size = 0 if self.num_classes == 1 else self.num_classes
@@ -131,6 +136,11 @@ class Trainer():
 
             self.g_optim.load_state_dict(ckpt['g_optim'])
             self.d_optim.load_state_dict(ckpt['d_optim'])
+
+            if 'g_scaler' in ckpt.keys():
+                self.g_scaler.load_state_dict(ckpt['g_scaler'])
+                self.d_scaler.load_state_dict(ckpt['d_scaler'])
+
             try:
                 self.start_iter = int(Path(cfg.TRAIN.ckpt).stem.split('-')[1])
             except ValueError:
@@ -138,10 +148,10 @@ class Trainer():
 
         # Print network summary tables
         if self.local_rank == 0:
-            z = torch.empty([1, self.batch_size, self.z_dim], device=self.device).unbind(0)
-            c = torch.randint(self.num_classes, (self.batch_size,), device=self.device) if self.num_classes > 1 else None
-            face = torch.empty([self.batch_size, 3, cfg.resolution, cfg.resolution], device=self.device)
-            masked_body = torch.empty([self.batch_size, 4, cfg.resolution, cfg.resolution], device=self.device)
+            z = torch.empty([1, self.batch_gpu, self.z_dim], device=self.device).unbind(0)
+            c = torch.randint(self.num_classes, (self.batch_gpu,), device=self.device) if self.num_classes > 1 else None
+            face = torch.empty([self.batch_gpu, 3, cfg.resolution, cfg.resolution], device=self.device)
+            masked_body = torch.empty([self.batch_gpu, 4, cfg.resolution, cfg.resolution], device=self.device)
             img, _ = print_module_summary(self.g, [z, c, face, masked_body])
             print_module_summary(self.d, [img, c])
 
@@ -172,7 +182,7 @@ class Trainer():
             return
 
         digits_length = len(str(cfg_t.iteration))
-        ema_beta = 0.5 ** (self.batch_size * self.num_gpus / (10 * 1000))
+        ema_beta = 0.5 ** (self.batch_gpu * self.num_gpus / (10 * 1000))
         mean_path_length = 0
         stats_keys = ['g', 'd', 'g_rec', 'real_score', 'fake_score', 'mean_path', 'r1', 'path', 'path_length']
         stats = OrderedDict((k, torch.tensor(0.0, dtype=torch.float, device=self.device)) for k in stats_keys)
@@ -199,77 +209,88 @@ class Trainer():
             requires_grad(self.g, False)
             requires_grad(self.d, True)
 
-            noise = mixing_noise(self.batch_size, self.z_dim, cfg_t.style_mixing_prob, self.device)
-            fake_label = torch.randint(self.num_classes, (self.batch_size,), device=self.device) if self.num_classes > 1 else None
-            fake_img, _ = self.g(noise, labels_in=fake_label, style_in=face_imgs, content_in=masked_body)
+            with autocast(enabled=self.autocast):
+                noise = mixing_noise(self.batch_gpu, self.z_dim, cfg_t.style_mixing_prob, self.device)
+                fake_label = torch.randint(self.num_classes, (self.batch_gpu,), device=self.device) if self.num_classes > 1 else None
+                fake_img, _ = self.g(noise, labels_in=fake_label, style_in=face_imgs, content_in=masked_body)
 
-            aug_fake_img = self.augment_pipe(fake_img) if cfg_d.ADA else fake_img
-            aug_body_imgs = self.augment_pipe(body_imgs) if cfg_d.ADA else body_imgs
+                aug_fake_img = self.augment_pipe(fake_img) if cfg_d.ADA else fake_img
+                aug_body_imgs = self.augment_pipe(body_imgs) if cfg_d.ADA else body_imgs
 
-            fake_pred = self.d(aug_fake_img, labels_in=fake_label)
-            real_pred = self.d(aug_body_imgs, labels_in=fake_label)
+                fake_pred = self.d(aug_fake_img, labels_in=fake_label)
+                real_pred = self.d(aug_body_imgs, labels_in=fake_label)
 
-            if cfg_d.ADA and (cfg_d.ADA_target) > 0:
-                ada_moments[0].add_(torch.ones_like(real_pred).sum())
-                ada_moments[1].add_(real_pred.sign().detach().flatten().sum())
+                if cfg_d.ADA and (cfg_d.ADA_target) > 0:
+                    ada_moments[0].add_(torch.ones_like(real_pred).sum())
+                    ada_moments[1].add_(real_pred.sign().detach().flatten().sum())
 
-            d_loss = logistic_loss(real_pred, fake_pred)
+                d_loss = logistic_loss(real_pred, fake_pred)
 
             stats['d'] = d_loss.detach()
             stats['real_score'] = real_pred.mean().detach()
             stats['fake_score'] = fake_pred.mean().detach()
 
             self.d.zero_grad()  # set_to_none=True in torch 1.7
-            d_loss.backward()
-            self.d_optim.step()
+            self.d_scaler.scale(d_loss).backward()
+            self.d_scaler.step(self.d_optim)
+            self.d_scaler.update()
 
             if i % cfg_t.Dreg_every == 0:
-                aug_body_imgs.requires_grad = True
-                real_pred = self.d(aug_body_imgs)
-                r1_loss = d_r1_loss(real_pred, aug_body_imgs)
-
                 self.d.zero_grad()  # set_to_none=True in torch 1.7
-                (cfg_t.r1 / 2 * r1_loss * cfg_t.Dreg_every + 0 * real_pred[0]).backward()
-                self.d_optim.step()
+                aug_body_imgs.requires_grad = True
+                with autocast(enabled=self.autocast):
+                    real_pred = self.d(aug_body_imgs)
+                    r1_loss = d_r1_loss(real_pred, aug_body_imgs)
+                    Dreg_loss = cfg_t.r1 / 2 * r1_loss * cfg_t.Dreg_every + 0 * real_pred[0]
+
+                self.d_scaler.scale(Dreg_loss).backward()
+                self.d_scaler.step(self.d_optim)
+                self.d_scaler.update()
                 stats['r1'] = r1_loss.detach()
 
             requires_grad(self.g, True)
             requires_grad(self.d, False)
 
             # G.
-            noise = mixing_noise(self.batch_size, self.z_dim, cfg_t.style_mixing_prob, self.device)
-            fake_label = torch.randint(self.num_classes, (self.batch_size,), device=self.device) if self.num_classes > 1 else None
-            fake_img, _ = self.g(noise, labels_in=fake_label, style_in=face_imgs, content_in=masked_body)
-            
-            aug_fake_img = self.augment_pipe(fake_img) if cfg_d.ADA else fake_img
-            fake_pred = self.d(aug_fake_img, labels_in=fake_label)
-            g_loss = nonsaturating_loss(fake_pred)
-            g_rec_loss = self.rec_loss(body_imgs, fake_img, mask=mask)
-            stats['g'] = g_loss.detach()
-            stats['g_rec'] = g_rec_loss.detach()
+            with autocast(enabled=self.autocast):
+                noise = mixing_noise(self.batch_gpu, self.z_dim, cfg_t.style_mixing_prob, self.device)
+                fake_label = torch.randint(self.num_classes, (self.batch_gpu,), device=self.device) if self.num_classes > 1 else None
+                fake_img, _ = self.g(noise, labels_in=fake_label, style_in=face_imgs, content_in=masked_body)
+
+                aug_fake_img = self.augment_pipe(fake_img) if cfg_d.ADA else fake_img
+                fake_pred = self.d(aug_fake_img, labels_in=fake_label)
+                g_adv_loss = nonsaturating_loss(fake_pred)
+                g_rec_loss = self.rec_loss(body_imgs, fake_img, mask=mask)
+                g_loss = g_adv_loss + g_rec_loss
+                stats['g'] = g_adv_loss.detach()
+                stats['g_rec'] = g_rec_loss.detach()
 
             self.g.zero_grad()  # set_to_none=True in torch 1.7
-            (g_loss + g_rec_loss).backward()
-            self.g_optim.step()
+            self.g_scaler.scale(g_loss).backward()
+            self.g_scaler.step(self.g_optim)
+            self.g_scaler.update()
 
             if i % cfg_t.Greg_every == 0:
                 self.log.debug("Apply regularization to G")
                 self.g.zero_grad()  # set_to_none=True in torch 1.7
-                path_batch_size = max(1, self.batch_size // cfg_t.path_bs_shrink)
-                noise = mixing_noise(path_batch_size, self.z_dim, cfg_t.style_mixing_prob, self.device)
-                fake_label = torch.randint(self.num_classes, (path_batch_size,), device=self.device) if self.num_classes > 1 else None
+                path_batch_size = max(1, self.batch_gpu // cfg_t.path_bs_shrink)
 
-                fake_img, latents = self.g(
-                    noise, labels_in=fake_label, style_in=face_imgs[:path_batch_size], content_in=masked_body[:path_batch_size], return_latents=True)
+                with autocast(enabled=self.autocast):
+                    noise = mixing_noise(path_batch_size, self.z_dim, cfg_t.style_mixing_prob, self.device)
+                    fake_label = torch.randint(self.num_classes, (path_batch_size,), device=self.device) if self.num_classes > 1 else None
 
-                path_loss, mean_path_length, path_lengths = path_regularize(fake_img, latents, mean_path_length)
-                weighted_path_loss = cfg_t.path_reg_gain * cfg_t.Greg_every * path_loss
+                    fake_img, latents = self.g(
+                        noise, labels_in=fake_label, style_in=face_imgs[:path_batch_size], content_in=masked_body[:path_batch_size], return_latents=True)
 
-                if cfg_t.path_bs_shrink:
-                    weighted_path_loss += 0 * fake_img[0, 0, 0, 0]
+                    path_loss, mean_path_length, path_lengths = path_regularize(fake_img, latents, mean_path_length)
+                    weighted_path_loss = cfg_t.path_reg_gain * cfg_t.Greg_every * path_loss
 
-                weighted_path_loss.backward()
-                self.g_optim.step()
+                    if cfg_t.path_bs_shrink:
+                        weighted_path_loss += 0 * fake_img[0, 0, 0, 0]
+
+                self.g_scaler.scale(weighted_path_loss).backward()
+                self.g_scaler.step(self.g_optim)
+                self.g_scaler.update()
 
                 stats['path'] = path_loss.detach()
                 stats['path_length'] = path_lengths.mean().detach()
@@ -282,7 +303,7 @@ class Trainer():
                 if self.num_gpus > 1:
                     torch.distributed.all_reduce(ada_moments)
                 ada_sign = (ada_moments[1] / ada_moments[0]).cpu().numpy()
-                adjust = np.sign(ada_sign - cfg_d.ADA_target) * (self.batch_size * cfg_d.ADA_interval) / (cfg_d.ADA_kimg * 1000)
+                adjust = np.sign(ada_sign - cfg_d.ADA_target) * (self.batch_gpu * self.num_gpus * cfg_d.ADA_interval) / (cfg_d.ADA_kimg * 1000)
                 self.augment_pipe.p.copy_(nn.functional.relu(self.augment_pipe.p + adjust))  # torch 1.4 has no Tenosr.maximum
                 ada_p = self.augment_pipe.p.item()
                 ada_moments = torch.zeros_like(ada_moments)
@@ -300,7 +321,7 @@ class Trainer():
 
             if self.local_rank == 0:
                 reduced_stats = {k: (v / self.num_gpus).item()
-                                for k, v in zip(stats.keys(), losses[0])}
+                                 for k, v in zip(stats.keys(), losses[0])}
                 reduced_stats['ada_p'] = ada_p
 
                 if i == 0 or (i + 1) % cfg_t.sample_every == 0:
@@ -316,15 +337,17 @@ class Trainer():
                         'g_ema': self.g_ema.state_dict(),
                         'g_optim': self.g_optim.state_dict(),
                         'd_optim': self.d_optim.state_dict(),
+                        'g_scaler': self.g_scaler.state_dict(),
+                        'd_scaler': self.d_scaler.state_dict(),
                     }
                     torch.save(snapshot, ckpt_dir / f'ckpt-{ckpt_iter}.pt')
                     ckpt_paths = list(ckpt_dir.glob('*.pt'))
-                    if len(ckpt_paths) > cfg_t.ckpt_max_keep:
+                    if cfg_t.ckpt_max_keep != -1 and len(ckpt_paths) > cfg_t.ckpt_max_keep:
                         ckpt_idx = sorted([int(str(p.name)[5:5 + digits_length]) for p in ckpt_paths])
                         os.remove(ckpt_dir / f'ckpt-{str(ckpt_idx[0]).zfill(digits_length)}.pt')
 
                 # update dashboard info. and progress bar
-                if wandb and self.use_wandb:
+                if self.use_wandb:
                     wandb_stats = {
                         'training time': time() - s,
                         'Generator': reduced_stats['g'],
@@ -419,9 +442,11 @@ if __name__ == '__main__':
     parser.add_argument('-c', '--cfg', help="path to the configuration file", metavar='PATH')
     parser.add_argument('-o', '--out_dir', metavar='PATH',
                         help="path to output directory. If not set, auto. set to subdirectory of outdir in configuration")
-    parser.add_argument('--local_rank', type=int, default=0, metavar='INT', help='Automatically given by %(prog)s')
+    parser.add_argument('--local_rank', type=int, default=0, metavar='INT', help="Automatically given by %(prog)s")
     parser.add_argument('--nobench', default=True, action='store_false', dest='cudnn_benchmark',
-                        help='disable cuDNN benchmarking')
+                        help="disable cuDNN benchmarking")
+    parser.add_argument('--autocast', default=False, action='store_true', help="whether to use `torch.cuda.amp.autocast")
+    parser.add_argument('--gradscale', default=False, action='store_true', help="whether to use gradient scaler")
     parser.add_argument('--debug', action='store_true')
     parser.add_argument('--wandb', action='store_true')
     args = parser.parse_args()

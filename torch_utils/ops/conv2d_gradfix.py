@@ -12,6 +12,7 @@ arbitrarily high order gradients with zero performance penalty."""
 import warnings
 import contextlib
 import torch
+from torch.cuda.amp import custom_fwd, custom_bwd
 
 # pylint: disable=redefined-builtin
 # pylint: disable=arguments-differ
@@ -106,6 +107,7 @@ def _conv2d_gradfix(transpose, weight_shape, stride, padding, output_padding, di
     # Forward & backward.
     class Conv2d(torch.autograd.Function):
         @staticmethod
+        @custom_fwd(cast_inputs=torch.float16)
         def forward(ctx, input, weight, bias):
             assert weight.shape == weight_shape
             if not transpose:
@@ -116,6 +118,7 @@ def _conv2d_gradfix(transpose, weight_shape, stride, padding, output_padding, di
             return output
 
         @staticmethod
+        @custom_bwd
         def backward(ctx, grad_output):
             input, weight = ctx.saved_tensors
             grad_input = None
@@ -139,6 +142,7 @@ def _conv2d_gradfix(transpose, weight_shape, stride, padding, output_padding, di
     # Gradient with respect to the weights.
     class Conv2dGradWeight(torch.autograd.Function):
         @staticmethod
+        @custom_fwd(cast_inputs=torch.float16)
         def forward(ctx, grad_output, input):
             op = torch._C._jit_get_operation('aten::cudnn_convolution_backward_weight' if not transpose else 'aten::cudnn_convolution_transpose_backward_weight')
             flags = [torch.backends.cudnn.benchmark, torch.backends.cudnn.deterministic, torch.backends.cudnn.allow_tf32]
@@ -148,6 +152,7 @@ def _conv2d_gradfix(transpose, weight_shape, stride, padding, output_padding, di
             return grad_weight
 
         @staticmethod
+        @custom_bwd
         def backward(ctx, grad2_grad_weight):
             grad_output, input = ctx.saved_tensors
             grad2_grad_output = None

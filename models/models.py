@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn import Parameter
+from torch.cuda.amp import autocast
 
 from torch_utils.ops import upfirdn2d, fused_act, conv2d_resample
 
@@ -331,13 +332,14 @@ class G_synthesis_stylegan2(nn.Module):
                 if res > 4:
                     conv_up = getattr(self, f'b{res}_up')
                     x = conv_up(x, dlatents_in[:, res_log2 * 2 - 5], **layer_kwargs)
-                
+
                 if self.use_content_encoder and res != self.resolutions[-1]:
                     x = torch.cat([x, content_encoding[f'b{res}']], dim=1)
 
                 x = getattr(self, f'b{res}')(x, dlatents_in[:, res_log2 * 2 - 4], **layer_kwargs)
 
                 if self.architecture == 'skip' or res == self.resolutions[-1]:
+                    # with autocast(enabled=False):
                     skip = getattr(self, f'b{res}_trgb')(x, dlatents_in[:, res_log2 * 2 - 3], skip=skip)
 
             images_out = skip

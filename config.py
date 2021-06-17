@@ -3,6 +3,7 @@ from yacs.config import CfgNode as CN
 
 _VALID_TYPES = {tuple, list, str, int, float, bool}
 
+# Default configuration. Overriden by experiments/<something>.yml with `CfgNode.merge_from_file`
 _C = CN()
 _C.description = ''
 _C.outdir = 'results'
@@ -23,7 +24,7 @@ _C.DATASET.pin_memory = False
 _C.DATASET.xflip = True
 _C.DATASET.ADA = False
 _C.DATASET.ADA_target = 0.6
-_C.DATASET.ADA_p = 0
+_C.DATASET.ADA_p = 0.0
 _C.DATASET.ADA_interval = 4
 _C.DATASET.ADA_kimg = 500
 
