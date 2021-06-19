@@ -72,9 +72,8 @@ class Trainer():
         self.autocast = args.autocast
 
         # general setting
-        random_seed = 1234
-        np.random.seed(random_seed * args.num_gpus + args.local_rank)
-        torch.manual_seed(random_seed * args.num_gpus + args.local_rank)
+        np.random.seed(args.seed * args.num_gpus + args.local_rank)
+        torch.manual_seed(args.seed * args.num_gpus + args.local_rank)
         torch.backends.cudnn.benchmark = args.cudnn_benchmark
         # torch.backends.cuda.matmul.allow_tf32 = allow_tf32  # Allow PyTorch to internally use tf32 for matmul
         # torch.backends.cudnn.allow_tf32 = allow_tf32        # Allow PyTorch to internally use tf32 for convolutions
@@ -446,8 +445,8 @@ if __name__ == '__main__':
     parser.add_argument('-o', '--out_dir', metavar='PATH',
                         help="path to output directory. If not set, auto. set to subdirectory of outdir in configuration")
     parser.add_argument('--local_rank', type=int, default=0, metavar='INT', help="Automatically given by %(prog)s")
-    parser.add_argument('--nobench', default=True, action='store_false', dest='cudnn_benchmark',
-                        help="disable cuDNN benchmarking")
+    parser.add_argument('--seed', type=int, default=0, help="random seed")
+    parser.add_argument('--nobench', default=True, action='store_false', dest='cudnn_benchmark', help="disable cuDNN benchmarking")
     parser.add_argument('--autocast', default=False, action='store_true', help="whether to use `torch.cuda.amp.autocast")
     parser.add_argument('--gradscale', default=False, action='store_true', help="whether to use gradient scaler")
     parser.add_argument('--debug', action='store_true')
