@@ -18,7 +18,7 @@ from torch.cuda.amp import autocast, GradScaler
 
 import misc
 from torch_utils.ops import conv2d_gradfix, grid_sample_gradfix
-from torch_utils.misc import print_module_summary
+from torch_utils.misc import print_module_summary, constant
 from config import get_cfg_defaults, convert_to_dict
 from dataset import get_dataset, get_dataloader, ResamplingDataset
 from models import Generator, Discriminator
@@ -79,6 +79,9 @@ class Trainer():
         # torch.backends.cuda.matmul.allow_tf32 = allow_tf32  # Allow PyTorch to internally use tf32 for matmul
         # torch.backends.cudnn.allow_tf32 = allow_tf32        # Allow PyTorch to internally use tf32 for convolutions
         if any(torch.__version__.startswith(x) for x in ['1.7.', '1.8.', '1.9']):
+            conv2d_gradfix.enabled = True
+        else:
+            self.log.warn("torch version not later than 1.7. disable conv2d_gradfix.")
             conv2d_gradfix.enabled = True
         grid_sample_gradfix.enabled = True  # Avoids errors with the augmentation pipe.
 
@@ -230,13 +233,13 @@ class Trainer():
             stats['real_score'] = real_pred.mean().detach()
             stats['fake_score'] = fake_pred.mean().detach()
 
-            self.d.zero_grad()  # set_to_none=True in torch 1.7
+            self.d.zero_grad(set_to_none=True)
             self.d_scaler.scale(d_loss).backward()
             self.d_scaler.step(self.d_optim)
             self.d_scaler.update()
 
             if i % cfg_t.Dreg_every == 0:
-                self.d.zero_grad()  # set_to_none=True in torch 1.7
+                self.d.zero_grad(set_to_none=True)
                 aug_body_imgs.requires_grad = True
                 with autocast(enabled=self.autocast):
                     real_pred = self.d(aug_body_imgs)
@@ -265,14 +268,14 @@ class Trainer():
                 stats['g'] = g_adv_loss.detach()
                 stats['g_rec'] = g_rec_loss.detach()
 
-            self.g.zero_grad()  # set_to_none=True in torch 1.7
+            self.g.zero_grad(set_to_none=True)
             self.g_scaler.scale(g_loss).backward()
             self.g_scaler.step(self.g_optim)
             self.g_scaler.update()
 
             if i % cfg_t.Greg_every == 0:
                 self.log.debug("Apply regularization to G")
-                self.g.zero_grad()  # set_to_none=True in torch 1.7
+                self.g.zero_grad(set_to_none=True)
                 path_batch_size = max(1, self.batch_gpu // cfg_t.path_bs_shrink)
 
                 with autocast(enabled=self.autocast):
@@ -304,7 +307,7 @@ class Trainer():
                     torch.distributed.all_reduce(ada_moments)
                 ada_sign = (ada_moments[1] / ada_moments[0]).cpu().numpy()
                 adjust = np.sign(ada_sign - cfg_d.ADA_target) * (self.batch_gpu * self.num_gpus * cfg_d.ADA_interval) / (cfg_d.ADA_kimg * 1000)
-                self.augment_pipe.p.copy_(nn.functional.relu(self.augment_pipe.p + adjust))  # torch 1.4 has no Tenosr.maximum
+                self.augment_pipe.p.copy_((self.augment_pipe.p + adjust).max(constant(0, device=self.device)))
                 ada_p = self.augment_pipe.p.item()
                 ada_moments = torch.zeros_like(ada_moments)
 
@@ -433,7 +436,7 @@ class Trainer():
                 self.out_dir / f'samples/fake-{idx}.png',
                 nrow=int(self.n_sample ** 0.5) * 3,
                 normalize=True,
-                range=(-1, 1),  # value_range in PyTorch 1.8+
+                value_range=(-1, 1),
             )
 
 
