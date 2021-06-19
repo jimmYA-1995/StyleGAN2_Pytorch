@@ -29,7 +29,7 @@ DATASET:
   # xflip: true
   ADA: false
   ADA_target: 0.6
-  ADA_p: 0
+  ADA_p: 0.0
   ADA_interval: 4
   ADA_kimg: 500
 
@@ -37,11 +37,11 @@ MODEL:
   z_dim: 512
   # CHANNEL_MULTIPLIER: 2
   extra_channel: 0
-  use_style_encoder: false
+  use_style_encoder: true
 
   G_MAP:
     embed_dim: 0
-    dlatent_dim: 512
+    dlatent_dim: 400
     num_layer: 8
     num_channel: 512
     lrmul: 0.01
@@ -52,7 +52,7 @@ MODEL:
     dlatent_dim: 112
   
   G_SYNTHESIS:
-    use_content_encoder: false
+    use_content_encoder: true
     content_encoder_kwargs:
       nf_in: 4
       max_nf: 256
