@@ -435,7 +435,7 @@ class Trainer():
                 self.out_dir / f'samples/fake-{idx}.png',
                 nrow=int(self.n_sample ** 0.5) * 3,
                 normalize=True,
-                value_range=(-1, 1),
+                range=(-1, 1),
             )
 
 
