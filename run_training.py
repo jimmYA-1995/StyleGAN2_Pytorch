@@ -188,10 +188,11 @@ class Trainer():
         mean_path_length = 0
         stats_keys = ['g', 'd', 'g_rec', 'real_score', 'fake_score', 'mean_path', 'r1', 'path', 'path_length']
         stats = OrderedDict((k, torch.tensor(0.0, dtype=torch.float, device=self.device)) for k in stats_keys)
+        fids = None
         ada_p = 0.0
         if cfg_d.ADA and (cfg_d.ADA_target) > 0:
             ada_moments = torch.zeros([2], device=self.device)  # [num_scalars, sum_of_scalars]
-            ada_sign = 0.0
+            ada_sign = torch.tensor(0.0, dtype=torch.float, device=self.device)
 
         # To make state_dict consistent in mutli nodes & single node training
         g_module = self.g.module if self.ddp else self.g
@@ -313,7 +314,7 @@ class Trainer():
             if self.fid_tracker is not None and (i == 0 or (i + 1) % self.cfg.EVAL.FID.every == 0):
                 k_iter = (i + 1) / 1000
                 self.g_ema.eval()
-                self.fid_tracker.calc_fid(self.g_ema, k_iter, save=True)
+                fids = self.fid_tracker.calc_fid(self.g_ema, k_iter, save=True)
 
             # reduce loss
             with torch.no_grad():
@@ -363,6 +364,9 @@ class Trainer():
                         'Fake Score': reduced_stats['fake_score'],
                         'ADA probability': reduced_stats['ada_p'],
                     }
+                    
+                    if self.fid_tracker is not None and fids is not None:
+                        wandb_stats['FID'] = fids[0]  # one class for now
 
                     if cfg_d.ADA:
                         wandb_stats['Real Sign'] = ada_sign.item()
@@ -374,7 +378,7 @@ class Trainer():
                     pbar = tqdm(total=cfg_t.iteration, initial=i, dynamic_ncols=True, smoothing=0, colour='yellow')
 
                 pbar.update(1)
-                desc = "d: {d:.4f}; g: {g:.4f}; g_rec: {g_rec:.4f}; r1: {r1:.4f}; path: {path:.4f}; mean path: {mean_path:.4f}; ada_p: {ada_p:.1f}"
+                desc = "d: {d:.4f}; g: {g:.4f}; g_rec: {g_rec:.4f}; r1: {r1:.4f}; path: {path:.4f}; mean path: {mean_path:.4f}; ada_p: {ada_p:.2f}"
                 pbar.set_description(desc.format(**reduced_stats))
 
         if args.local_rank == 0:
@@ -449,8 +453,8 @@ if __name__ == '__main__':
     parser.add_argument('--nobench', default=True, action='store_false', dest='cudnn_benchmark', help="disable cuDNN benchmarking")
     parser.add_argument('--autocast', default=False, action='store_true', help="whether to use `torch.cuda.amp.autocast")
     parser.add_argument('--gradscale', default=False, action='store_true', help="whether to use gradient scaler")
+    parser.add_argument('--no-wandb', default=True, action='store_false', dest='wandb', help="disable wandb logging")
     parser.add_argument('--debug', action='store_true')
-    parser.add_argument('--wandb', action='store_true')
     args = parser.parse_args()
 
     cfg = get_cfg_defaults()
@@ -480,12 +484,19 @@ if __name__ == '__main__':
     logger.info(f"trainer initialized. ({time() - t :.2f} sec)")
 
     if args.local_rank == 0 and args.wandb:
+        if args.debug:
+            os.environ['WANDB_MODE'] = "dryrun"
         logger.info(f"initialize wandb project: {Path(args.cfg).stem}")
-        wandb.init(project=f'stylegan2-{Path(args.cfg).stem}',
-                   config=convert_to_dict(cfg))
+        run = wandb.init(project=f'stylegan2-{Path(args.cfg).stem}',
+                         config=convert_to_dict(cfg),
+                         # id="",
+                         # resume="allow",
+        )
+        # logger.info(f"run-name: {run.name}")
 
     cfg.freeze()
     trainer.train()
 
     if args.local_rank == 0:
+        run.finish()
         (args.out_dir / 'finish.txt').touch()
