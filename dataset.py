@@ -193,40 +193,47 @@ class GenericDataset(data.Dataset):
         raise NotImplementedError()
 
 
-class DeepFashionDataset(GenericDataset):
-    def __init__(self, config, resolution, transform=None, split='train', **kwargs):
-        super(DeepFashionDataset, self).__init__(
-            config, resolution, transform=transform, split=split, **kwargs)
+class DeepFashionDataset(data.Dataset):
+    def __init__(self, config, resolution, transform=None, split='train'):
+        root = Path(config.roots[0])
+        if config.roots[0].startswith('~'):
+            root = root.expanduser()
+
+        split_file = Path(root).parent / 'split.pkl'
+        self.face_dir = Path(root) / 'face'
+        self.mask_dir = Path(root) / 'mask'
+        self.target_dir = Path(root).parent / f'r{resolution}' / 'images'
+        print(split_file)
+        assert split_file.exists()
+        assert self.face_dir.exists() and self.mask_dir.exists() and self.target_dir.exists()
+
+        self.fileID = pickle.load(open(split_file, 'rb'))[split]
+        assert set(self.fileID) <= set(p.stem for p in self.face_dir.glob('*.png'))
+        assert set(self.fileID) <= set(p.stem for p in self.mask_dir.glob('*.png'))
+        assert set(self.fileID) <= set(p.stem for p in self.target_dir.glob('*.jpg'))
+
+        self.config = config
+        self.resolution = resolution
+        self.transform = transform
+        self.mask_trf = transforms.ToTensor()
+
+    def __len__(self):
+        return len(self.fileID)
 
     def __getitem__(self, idx):
-        cfg = self.config
-        load_size = self.resolution + 30
-        h1 = w1 = (load_size - self.resolution) // 2
-        h2 = w2 = (load_size + self.resolution) // 2
-
-        img = Image.open(self.paths[idx])
-        assert (img.mode == 'RGBA' and cfg.channels[0] == 4) ^ (img.mode == 'RGB' and cfg.channels[0] == 3), \
-            "image channel is not consistent, please check your config"
-
-        img_np = np.asarray(img.convert('RGB').resize((load_size * 2, load_size), Image.ANTIALIAS))
-        mask = None
-        if img.mode == 'RGBA':
-            mask = img.split()[-1].resize((load_size * 2, load_size), Image.NEAREST)
-            mask_np = np.asarray(mask)[..., None]
-            img_np = np.concatenate([img_np, mask_np], axis=-1)
-
-        imgA = img_np[h1:h2, w1:w2, :]
-        imgB = img_np[h1:h2, load_size + w1:load_size + w2, :]
+        filename = f'{self.fileID[idx]}.png'
+        res = self.resolution
+        face = Image.open(self.face_dir / filename).resize((res, res), Image.ANTIALIAS)
+        mask = Image.open(self.mask_dir / filename).resize((res, res), Image.NEAREST)
+        target = Image.open(self.target_dir / filename.replace('png', 'jpg'))
+        assert face.mode == 'RGB' and mask.mode == 'L' and target.mode == 'RGB'
 
         if self.transform is not None:
-            imgA = self.transform(imgA.copy())
-            imgB = self.transform(imgB.copy())
+            face = self.transform(face)
+            target = self.transform(target)
+        mask = self.mask_trf(mask)
 
-        if mask is not None:
-            imgA = imgA[:3, :, :]
-            imgB, mask = torch.split(imgB, 3, dim=0)
-            return imgB, imgA, mask
-        return imgB, imgA
+        return face, target, mask
 
 
 class ResamplingDataset(data.Dataset):
@@ -241,7 +248,7 @@ class ResamplingDataset(data.Dataset):
         self.tgt_size = resolution
         statistics = pickle.load(open(Path(cfg.roots[0]).parent / 'landmarks_statistics.pkl', 'rb'))
         self.paths = sorted(list((Path(cfg.roots[0]).parent / 'stylegan2-ada-outputs').glob('*.png')))
-        
+
         self.ori_size = statistics['resolution']
         self.V = statistics['V']
         self.mu = statistics['mu']
@@ -253,10 +260,13 @@ class ResamplingDataset(data.Dataset):
 
     def __getitem__(self, idx):
         canvas = np.ones((self.ori_size, self.ori_size, 3), dtype=np.uint8) * 127  # gray
+
+        # resampling
         z = np.random.randn(self.ndim, )
         resample_latent = z @ self.V.T * self.sigma + self.mu
         resample_latent = np.where(resample_latent > 0, resample_latent, 0).astype(int)
         x1, y1, x2, y2 = resample_latent[4:8]
+
         face_img = Image.open(self.paths[idx])
         face_np = np.asarray(face_img.resize((x2 - x1, y2 - y1), Image.ANTIALIAS))
         canvas[y1:y2, x1:x2] = face_np
@@ -308,7 +318,7 @@ def get_dataloader(config, batch_size, n_workers=None, split='train', distribute
         batch_size=batch_size,
         num_workers=n_workers,
         pin_memory=config.DATASET.pin_memory,
-        sampler=data_sampler(dataset, shuffle=True, distributed=distributed),
+        sampler=data_sampler(dataset, shuffle=(split == 'train'), distributed=distributed),
         drop_last=True,
     )
     return loader
