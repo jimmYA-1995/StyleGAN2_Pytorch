@@ -13,6 +13,7 @@ Only works on 2D images and assumes
 
 import warnings
 import torch
+from torch.cuda.amp import custom_fwd, custom_bwd
 
 # pylint: disable=redefined-builtin
 # pylint: disable=arguments-differ
@@ -43,6 +44,7 @@ def _should_use_custom_op():
 
 class _GridSample2dForward(torch.autograd.Function):
     @staticmethod
+    @custom_fwd(cast_inputs=torch.float16)
     def forward(ctx, input, grid):
         assert input.ndim == 4
         assert grid.ndim == 4
@@ -51,6 +53,7 @@ class _GridSample2dForward(torch.autograd.Function):
         return output
 
     @staticmethod
+    @custom_bwd
     def backward(ctx, grad_output):
         input, grid = ctx.saved_tensors
         grad_input, grad_grid = _GridSample2dBackward.apply(grad_output, input, grid)
@@ -60,6 +63,7 @@ class _GridSample2dForward(torch.autograd.Function):
 
 class _GridSample2dBackward(torch.autograd.Function):
     @staticmethod
+    @custom_fwd(cast_inputs=torch.float16)
     def forward(ctx, grad_output, input, grid):
         op = torch._C._jit_get_operation('aten::grid_sampler_2d_backward')
         grad_input, grad_grid = op(grad_output, input, grid, 0, 0, False)
@@ -67,6 +71,7 @@ class _GridSample2dBackward(torch.autograd.Function):
         return grad_input, grad_grid
 
     @staticmethod
+    @custom_bwd
     def backward(ctx, grad2_grad_input, grad2_grad_grid):
         _ = grad2_grad_grid # unused
         grid, = ctx.saved_tensors

@@ -18,7 +18,7 @@ from scipy import linalg
 from tqdm import tqdm
 
 import misc
-from dataset import get_dataset, ResamplingDataset
+from dataset import get_dataset, ResamplingDatasetV2
 from .calc_inception import load_patched_inception_v3
 
 
@@ -53,7 +53,7 @@ class FIDTracker():
     def __init__(self, cfg, rank, num_gpus, out_dir, use_tqdm=False):
         print(f"[{os.getpid()}] rank: {rank}({num_gpus} gpus)")
         fid_cfg = cfg.EVAL.FID
-        inception_path = fid_cfg.INCEPTION_CACHE
+        inception_path = fid_cfg.inception_cache
 
         self.num_gpus = num_gpus
         self.rank = rank
@@ -67,15 +67,15 @@ class FIDTracker():
         self.k_iters = []
         self.fids = []
         self.cond_samples = None
-        self.latent_size = cfg.MODEL.LATENT_SIZE
-        self.conditional = True if cfg.N_CLASSES > 1 else False
-        self.num_classes = cfg.N_CLASSES
+        self.latent_size = cfg.MODEL.z_dim
+        self.conditional = True if cfg.num_classes > 1 else False
+        self.num_classes = cfg.num_classes
         self.model_bs = 8
         self.use_tqdm = use_tqdm
-        if fid_cfg.SAMPLE_DIR:
-            self.cond_samples = load_condition_sample(fid_cfg.SAMPLE_DIR, self.model_bs)
+        if fid_cfg.sample_dir:
+            self.cond_samples = load_condition_sample(fid_cfg.sample_dir, self.model_bs)
             self.cond_samples = self.cond_samples.to(self.device)
-            self.log.info(f"using smaple directory: {fid_cfg.SAMPLE_DIR}."
+            self.log.info(f"using smaple directory: {fid_cfg.sample_dir}."
                           f"Get {self.cond_samples.shape[0]} conditional sample")
             self.model_bs = self.cond_samples.shape[0]
 
@@ -106,9 +106,10 @@ class FIDTracker():
                 self.log.info(f"save inception cache in {self.out_dir}")
                 with open(self.out_dir / 'inception_cache.pkl', 'wb') as f:
                     pickle.dump(dict(mean=self.real_mean, cov=self.real_cov, idx_to_class=self.idx_to_class), f)
-        
-        # self.val_dataset = ResamplingDataset(cfg.DATASET, cfg.RESOLUTION)
-        self.val_dataset = get_dataset(cfg.DATASET, cfg.RESOLUTION, split='val')
+
+        # self.val_dataset = ResamplingDataset(cfg.DATASET, cfg.resolution)
+        self.val_dataset = ResamplingDatasetV2(cfg.DATASET, 256, split='val')
+        # self.val_dataset = get_dataset(cfg.DATASET, cfg.resolution, split='val')
         self.log.info(f"validation data samples: {len(self.val_dataset)}")
 
     def calc_fid(self, generator, k_iter, save=False, eps=1e-6):
@@ -169,9 +170,10 @@ class FIDTracker():
             start = time.time()
             self.idx_to_class.append(None)  # no class name now
             self.log.info(f'extract features from real "{self.idx_to_class[i]}" images...')
-            dataset = get_dataset(cfg.DATASET, cfg.RESOLUTION)
+            dataset = get_dataset(cfg.DATASET, cfg.resolution, split='all')
             num_items = len(dataset)
-            num_items = min(num_items, self.cfg.N_SAMPLE)
+            num_items = min(num_items, self.cfg.n_sample)
+            self.log.info(f"total: {num_items} real images")
 
             item_subset = [(i * self.num_gpus + self.rank) % num_items
                            for i in range((num_items - 1) // self.num_gpus + 1)]
@@ -182,8 +184,8 @@ class FIDTracker():
 
             features = []
             loader = iter(dataloader)
-            n_batch = len(item_subset) // self.cfg.BATCH_SIZE
-            if len(item_subset) % self.cfg.BATCH_SIZE != 0:
+            n_batch = len(item_subset) // self.cfg.batch_size
+            if len(item_subset) % self.cfg.batch_size != 0:
                 n_batch += 1
             progress_bar = range(n_batch)
             if self.use_tqdm:
@@ -212,15 +214,19 @@ class FIDTracker():
 
     @torch.no_grad()
     def extract_feature_from_model(self, generator):
-        num_sample = self.cfg.N_SAMPLE // self.num_gpus
+        num_sample = self.cfg.n_sample // self.num_gpus
         n_batch = num_sample // self.model_bs
         resid = num_sample % self.model_bs
         features_list = []
+        num_items = len(self.val_dataset)
+        item_subset = [(i * self.num_gpus + self.rank) % num_items
+                       for i in range((num_items - 1) // self.num_gpus + 1)]
 
         for class_idx in range(self.num_classes):
             loader = torch.utils.data.DataLoader(self.val_dataset,
                                                  batch_size=self.model_bs,
                                                  shuffle=False,
+                                                 sampler=item_subset,
                                                  num_workers=2)
             loader = sample_data(loader)
             features = []
@@ -300,15 +306,20 @@ def subprocess_fn(rank, args, cfg, temp_dir):
         ckpt = torch.load(ckpt)
 
         # latent_dim, label_size, resolution
-        assert cfg.N_CLASSES >= 1, f"#classes must greater than 0"
-        label_size = 0 if cfg.N_CLASSES == 1 else cfg.N_CLASSES
-        g = Generator(cfg.MODEL.LATENT_SIZE,
-                      label_size,
-                      cfg.RESOLUTION,
-                      embedding_size=cfg.MODEL.EMBEDDING_SIZE,
-                      extra_channels=cfg.MODEL.EXTRA_CHANNEL,
-                      dlatents_size=256,
-                      is_training=False)
+        assert cfg.num_classes >= 1, f"#classes must greater than 0"
+        label_size = 0 if cfg.num_classes == 1 else cfg.num_classes
+        g = Generator(
+            cfg.MODEL.z_dim,
+            label_size,
+            cfg.resolution,
+            extra_channels=cfg.MODEL.extra_channel,
+            use_style_encoder=cfg.MODEL.use_style_encoder,
+            use_content_encoder=cfg.MODEL.use_content_encoder,
+            map_kwargs=cfg.MODEL.G_MAP,
+            style_encoder_kwargs=cfg.MODEL.STYLE_ENCODER,
+            synthesis_kwargs=cfg.MODEL.G_SYNTHESIS,
+            is_training=False
+        )
         g.load_state_dict(ckpt['g_ema'])
         g = copy.deepcopy(g).eval().requires_grad_(False).to(device)
 
@@ -348,4 +359,3 @@ if __name__ == '__main__':
             subprocess_fn(rank=0, args=args, cfg=cfg, temp_dir=temp_dir)
         else:
             torch.multiprocessing.spawn(fn=subprocess_fn, args=(args, cfg, temp_dir), nprocs=args.num_gpus)
-

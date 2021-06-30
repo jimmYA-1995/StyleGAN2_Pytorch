@@ -3,7 +3,7 @@ test/
 data/
 *.png
 results/
-experiments/
+experiments/*
 !experiments/default.yml
 checkpoints/
 wandb/
@@ -143,3 +143,6 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# IDE
+.vscode/

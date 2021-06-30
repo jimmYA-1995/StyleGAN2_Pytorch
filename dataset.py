@@ -1,6 +1,7 @@
 from io import BytesIO
 from pathlib import Path
 from functools import partial
+from collections import namedtuple
 import pickle
 from tqdm import tqdm
 import lmdb
@@ -18,7 +19,7 @@ ALLOW_EXTS = ['jpg', 'jpeg', 'png', 'JPEG']
 
 class MultiResolutionDataset(data.Dataset):
     def __init__(self, config, resolution, transform=None):
-        path = config.ROOTS[0]
+        path = config.roots[0]
         self.env = lmdb.open(
             path,
             max_readers=32,
@@ -65,7 +66,7 @@ def ImageFolderDataset(config, resolution, transform=None):
             return True
         return False
 
-    return ImageFolder(config.ROOTS[0], transform=transform, loader=image_loader, is_valid_file=check_valid)
+    return ImageFolder(config.roots[0], transform=transform, loader=image_loader, is_valid_file=check_valid)
 
 
 def load_images_and_concat(path, resolution, sources, channel_info=None, flip=False):
@@ -104,20 +105,20 @@ class MultiChannelDataset(data.Dataset):
     def __init__(self, config, resolution, transform=None, **kwargs):
         from torchvision import get_image_backend
         assert get_image_backend() == 'PIL'
-        assert len(config.SOURCE) == len(config.CHANNELS), \
+        assert len(config.source) == len(config.channels), \
             f"the numbers of sources and channels don't match."
 
-        self.roots = config.ROOTS
+        self.roots = config.roots
         self.transform = transform
         self.target_transform = None
         self.loader = partial(load_images_and_concat,
                               resolution=resolution,
-                              sources=config.SOURCE,
-                              channel_info=config.CHANNELS)
+                              sources=config.source,
+                              channel_info=config.channels)
         self.load_in_mem = config.LOAD_IN_MEM
-        self.flip = config.FLIP
+        self.flip = config.xflip
 
-        sources = config.SOURCE
+        sources = config.source
         self.img_paths = []
         for root in self.roots:
             root = Path(root)
@@ -181,7 +182,7 @@ class GenericDataset(data.Dataset):
     def __init__(self, config, resolution, transform=None, split='train', **kwargs):
         self.paths = []
         for ext in ALLOW_EXTS:
-            self.paths += sorted(list((Path(config.ROOTS[0]) / split).glob(f"*.{ext}")))
+            self.paths += sorted(list((Path(config.roots[0]) / split).glob(f"*.{ext}")))
         self.config = config
         self.resolution = resolution
         self.transform = transform
@@ -193,55 +194,66 @@ class GenericDataset(data.Dataset):
         raise NotImplementedError()
 
 
-class DeepFashionDataset(GenericDataset):
-    def __init__(self, config, resolution, transform=None, split='train', **kwargs):
-        super(DeepFashionDataset, self).__init__(
-            config, resolution, transform=transform, split=split, **kwargs)
+class DeepFashionDataset(data.Dataset):
+    def __init__(self, config, resolution, transform=None, split='train'):
+        assert len(config.roots) == len(config.source) == 1
+        assert split in ['train', 'val', 'test', 'all']
+        root = Path(config.roots[0]).expanduser()
+        src = config.source[0]
+        self.config = config
+        self.resolution = resolution
+        self.transform = transform
+        self.mask_trf = transforms.ToTensor()
+
+        split_file = Path(root) / 'split.pkl'
+        assert split_file.exists()
+        split_map = pickle.load(open(split_file, 'rb'))
+        if split == 'all':
+            self.fileID = [ID for IDs in split_map.values() for ID in IDs]
+        else:
+            self.fileID = split_map[split]
+        self.fileID.sort()
+
+        self.face_dir = Path(root) / src / 'face'
+        self.mask_dir = Path(root) / src / 'mask'
+        self.target_dir = Path(root) / f'r{resolution}' / 'images'
+        assert self.face_dir.exists() and self.mask_dir.exists() and self.target_dir.exists()
+        assert set(self.fileID) <= set(p.stem for p in self.face_dir.glob('*.png'))
+        assert set(self.fileID) <= set(p.stem for p in self.mask_dir.glob('*.png'))
+        assert set(self.fileID) <= set(p.stem for p in self.target_dir.glob('*.jpg'))
+
+    def __len__(self):
+        return len(self.fileID)
 
     def __getitem__(self, idx):
-        cfg = self.config
-        load_size = self.resolution + 30
-        h1 = w1 = (load_size - self.resolution) // 2
-        h2 = w2 = (load_size + self.resolution) // 2
-
-        img = Image.open(self.paths[idx])
-        assert (img.mode == 'RGBA' and cfg.CHANNELS[0] == 4) ^ (img.mode == 'RGB' and cfg.CHANNELS[0] == 3), \
-            "image channel is not consistent, please check your config"
-
-        img_np = np.asarray(img.convert('RGB').resize((load_size * 2, load_size), Image.ANTIALIAS))
-        mask = None
-        if img.mode == 'RGBA':
-            mask = img.split()[-1].resize((load_size * 2, load_size), Image.NEAREST)
-            mask_np = np.asarray(mask)[..., None]
-            img_np = np.concatenate([img_np, mask_np], axis=-1)
-
-        imgA = img_np[h1:h2, w1:w2, :]
-        imgB = img_np[h1:h2, load_size + w1:load_size + w2, :]
+        filename = f'{self.fileID[idx]}.png'
+        res = self.resolution
+        face = Image.open(self.face_dir / filename).resize((res, res), Image.ANTIALIAS)
+        mask = Image.open(self.mask_dir / filename).resize((res, res), Image.NEAREST)
+        target = Image.open(self.target_dir / filename.replace('png', 'jpg'))
+        assert face.mode == 'RGB' and mask.mode == 'L' and target.mode == 'RGB'
 
         if self.transform is not None:
-            imgA = self.transform(imgA.copy())
-            imgB = self.transform(imgB.copy())
+            face = self.transform(face)
+            target = self.transform(target)
+        mask = self.mask_trf(mask)
 
-        if mask is not None:
-            imgA = imgA[:3, :, :]
-            imgB, mask = torch.split(imgB, 3, dim=0)
-            return imgB, imgA, mask
-        return imgB, imgA
+        return target, face, mask
 
 
 class ResamplingDataset(data.Dataset):
     def __init__(self, cfg, resolution):
-        assert (Path(cfg.ROOTS[0]).parent / 'landmarks_statistics.pkl').exists()
-        assert (Path(cfg.ROOTS[0]).parent / 'stylegan2-ada-outputs').exists()
+        assert (Path(cfg.roots[0]).parent / 'landmarks_statistics.pkl').exists()
+        assert (Path(cfg.roots[0]).parent / 'stylegan2-ada-outputs').exists()
         trf = [
             transforms.ToTensor(),
-            transforms.Normalize(cfg.MEAN[:3], cfg.STD[:3], inplace=True),
+            transforms.Normalize(cfg.mean[:3], cfg.std[:3], inplace=True),
         ]
         self.transform = transforms.Compose(trf)
         self.tgt_size = resolution
-        statistics = pickle.load(open(Path(cfg.ROOTS[0]).parent / 'landmarks_statistics.pkl', 'rb'))
-        self.paths = sorted(list((Path(cfg.ROOTS[0]).parent / 'stylegan2-ada-outputs').glob('*.png')))
-        
+        statistics = pickle.load(open(Path(cfg.roots[0]).parent / 'landmarks_statistics.pkl', 'rb'))
+        self.paths = sorted(list((Path(cfg.roots[0]).parent / 'stylegan2-ada-outputs').glob('*.png')))
+
         self.ori_size = statistics['resolution']
         self.V = statistics['V']
         self.mu = statistics['mu']
@@ -253,10 +265,13 @@ class ResamplingDataset(data.Dataset):
 
     def __getitem__(self, idx):
         canvas = np.ones((self.ori_size, self.ori_size, 3), dtype=np.uint8) * 127  # gray
+
+        # resampling
         z = np.random.randn(self.ndim, )
         resample_latent = z @ self.V.T * self.sigma + self.mu
         resample_latent = np.where(resample_latent > 0, resample_latent, 0).astype(int)
         x1, y1, x2, y2 = resample_latent[4:8]
+
         face_img = Image.open(self.paths[idx])
         face_np = np.asarray(face_img.resize((x2 - x1, y2 - y1), Image.ANTIALIAS))
         canvas[y1:y2, x1:x2] = face_np
@@ -277,6 +292,68 @@ class ResamplingDataset(data.Dataset):
         return masked_body, face_img, mask
 
 
+class ResamplingDatasetV2(data.Dataset):
+    """  Resampling position & angles for fake faces
+    """
+    def __init__(self, config, resolution, split='train'):
+        assert len(config.roots) == len(config.source) == 1
+        assert split in ['train', 'val']
+        self.resolution = resolution
+        trf = [
+            transforms.ToTensor(),
+            transforms.Normalize([0.5] * 3, [0.5] * 3, inplace=True),
+        ]
+        self.transform = transforms.Compose(trf)
+        self.mask_trf = transforms.ToTensor()
+
+        # statistics
+        Gaussian = namedtuple('Gaussian', 'X_mean X_std cx_mean cx_std cy_mean cy_std')
+        self.big = Gaussian(78.08, 11.18, 517.075, 26.655, 131.60, 24.41)
+        self.small = Gaussian(44.56, 3.32, 517.075, 26.655, 100.36, 17.22)
+        self.rng = np.random.default_rng()
+
+        root = Path(config.roots[0]).expanduser() / config.source[0]
+        self.fake_dir = root / 'fake_face'
+        info_file = root / 'fake_face_phi.pkl'
+        assert self.fake_dir.exists() and info_file.exists()
+
+        info = pickle.load(open(info_file, 'rb'))  # file_stem, phi
+        total = len(info)
+        self.info = info[:total // 2] if split == 'train' else info[total // 2:]
+        print(f"total {len(self.info)} {split} images")
+
+    def __len__(self):
+        return len(self.info)
+
+    def __getitem__(self, idx):
+        res = self.resolution
+        fake_face = Image.open(self.fake_dir / f"{self.info[idx][0]}.png")
+        phi = self.info[idx][1]
+        dist = self.big if np.random.random() < 0.7 else self.small
+        rho = self.rng.normal(loc=dist.X_mean, scale=dist.X_std, size=())
+        cx = self.rng.normal(loc=dist.cx_mean, scale=dist.cx_std, size=())
+        cy = self.rng.normal(loc=dist.cy_mean, scale=dist.cy_std, size=())
+        c = np.hstack([cx, cy])
+        x = np.hstack([rho * np.cos(phi), rho * np.sin(phi)])
+        y = np.flipud(x) * [-1, 1]
+        quad = np.stack([c - x - y, c - x + y, c + x + y, c + x - y]).astype(np.float32)
+
+        face_np = np.asarray(fake_face.resize((1024, 1024), Image.ANTIALIAS))
+        src = np.array([[0, 0], [0, 1024], [1024, 1024], [1024, 0]], dtype=np.float32)
+
+        M = cv2.getPerspectiveTransform(src, quad)
+        masked_body = cv2.warpPerspective(face_np, M, (1024, 1024), borderMode=cv2.BORDER_CONSTANT, borderValue=(127, 127, 127))
+        mask = Image.fromarray(np.any(masked_body != 127, axis=-1).astype(np.uint8) * 255, mode='L').resize((res, res), Image.NEAREST)
+        masked_body = Image.fromarray(masked_body).resize((res, res), Image.ANTIALIAS)
+
+        if self.transform is not None:
+            fake_face = self.transform(fake_face)
+            masked_body = self.transform(masked_body)
+        mask = self.mask_trf(mask)
+
+        return masked_body, fake_face, mask
+
+
 def data_sampler(dataset, shuffle, distributed):
     if distributed:
         return data.distributed.DistributedSampler(dataset, shuffle=shuffle)
@@ -290,32 +367,33 @@ def data_sampler(dataset, shuffle, distributed):
 def get_dataset(config, resolution, split='train'):
     trf = [
         transforms.ToTensor(),
-        transforms.Normalize(config.MEAN, config.STD, inplace=True),
+        transforms.Normalize(config.mean, config.std, inplace=True),
     ]
     transform = transforms.Compose(trf)
-    Dataset = globals().get(config.DATASET)
+    Dataset = globals().get(config.dataset)
     dataset = Dataset(config, resolution, transform=transform, split=split)
     return dataset
 
 
 def get_dataloader(config, batch_size, n_workers=None, split='train', distributed=False):
-    dataset = get_dataset(config.DATASET, config.RESOLUTION, split=split)
+    dataset = get_dataset(config.DATASET, config.resolution, split=split)
     if n_workers is None:
-        n_workers = config.DATASET.WORKERS
+        n_workers = config.DATASET.workers
 
     loader = data.DataLoader(
         dataset,
         batch_size=batch_size,
         num_workers=n_workers,
-        sampler=data_sampler(dataset, shuffle=True, distributed=distributed),
+        pin_memory=config.DATASET.pin_memory,
+        sampler=data_sampler(dataset, shuffle=(split == 'train'), distributed=distributed),
         drop_last=True,
     )
     return loader
 
 
 def get_dataloader_for_each_class(config, batch_size, distributed=False):
-    dataset = get_dataset(config.DATASET, config.RESOLUTION)
-    data_root = Path(config.DATASET.ROOTS[0])
+    dataset = get_dataset(config.DATASET, config.resolution)
+    data_root = Path(config.DATASET.roots[0])
     dataloaders = []
     indices = list(range(len(dataset)))
     last_idx, cur_idx = 0, 0
@@ -326,7 +404,7 @@ def get_dataloader_for_each_class(config, batch_size, distributed=False):
         loader = data.DataLoader(
             dataset,
             batch_size=batch_size,
-            num_workers=config.DATASET.WORKERS,
+            num_workers=config.DATASET.workers,
             sampler=data.SubsetRandomSampler(indices[last_idx:cur_idx]),
             drop_last=True,
         )
