@@ -28,7 +28,7 @@ DATASET:
   pin_memory: false
   # xflip: true
   ADA: false
-  ADA_target: 0.6
+  ADA_target: 0.6  # set 0 to fix prob.
   ADA_p: 0.0
   ADA_interval: 4
   ADA_kimg: 500

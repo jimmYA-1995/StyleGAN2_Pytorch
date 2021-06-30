@@ -20,7 +20,7 @@ import misc
 from torch_utils.ops import conv2d_gradfix, grid_sample_gradfix
 from torch_utils.misc import print_module_summary, constant
 from config import get_cfg_defaults, convert_to_dict
-from dataset import get_dataset, get_dataloader, ResamplingDataset
+from dataset import get_dataset, get_dataloader, ResamplingDatasetV2
 from models import Generator, Discriminator
 from augment import AugmentPipe
 from losses import nonsaturating_loss, path_regularize, logistic_loss, d_r1_loss, MaskedRecLoss
@@ -364,11 +364,11 @@ class Trainer():
                         'Fake Score': reduced_stats['fake_score'],
                         'ADA probability': reduced_stats['ada_p'],
                     }
-                    
+
                     if self.fid_tracker is not None and fids is not None:
                         wandb_stats['FID'] = fids[0]  # one class for now
 
-                    if cfg_d.ADA:
+                    if cfg_d.ADA and cfg_d.ADA_target > 0:
                         wandb_stats['Real Sign'] = ada_sign.item()
 
                     wandb.log(wandb_stats)
@@ -394,7 +394,7 @@ class Trainer():
 
         # ugly. concat val data from real dataset & resampling
         datasets = [get_dataset(cfg.DATASET, cfg.resolution, split='val'),
-                    ResamplingDataset(cfg.DATASET, cfg.resolution)]
+                    ResamplingDatasetV2(cfg.DATASET, cfg.resolution)]
         for ds in datasets:
             loader = torch.utils.data.DataLoader(ds, batch_size=self.n_sample // len(datasets), shuffle=False, num_workers=0)
             body_imgs, face_imgs, mask = [x.to(self.device) for x in next(iter(loader))]

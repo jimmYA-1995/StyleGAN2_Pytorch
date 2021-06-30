@@ -18,7 +18,7 @@ from scipy import linalg
 from tqdm import tqdm
 
 import misc
-from dataset import get_dataset, ResamplingDataset
+from dataset import get_dataset, ResamplingDatasetV2
 from .calc_inception import load_patched_inception_v3
 
 
@@ -106,9 +106,10 @@ class FIDTracker():
                 self.log.info(f"save inception cache in {self.out_dir}")
                 with open(self.out_dir / 'inception_cache.pkl', 'wb') as f:
                     pickle.dump(dict(mean=self.real_mean, cov=self.real_cov, idx_to_class=self.idx_to_class), f)
-        
+
         # self.val_dataset = ResamplingDataset(cfg.DATASET, cfg.resolution)
-        self.val_dataset = get_dataset(cfg.DATASET, cfg.resolution, split='val')
+        self.val_dataset = ResamplingDatasetV2(cfg.DATASET, 256, split='val')
+        # self.val_dataset = get_dataset(cfg.DATASET, cfg.resolution, split='val')
         self.log.info(f"validation data samples: {len(self.val_dataset)}")
 
     def calc_fid(self, generator, k_iter, save=False, eps=1e-6):
@@ -169,9 +170,10 @@ class FIDTracker():
             start = time.time()
             self.idx_to_class.append(None)  # no class name now
             self.log.info(f'extract features from real "{self.idx_to_class[i]}" images...')
-            dataset = get_dataset(cfg.DATASET, cfg.resolution)
+            dataset = get_dataset(cfg.DATASET, cfg.resolution, split='all')
             num_items = len(dataset)
             num_items = min(num_items, self.cfg.n_sample)
+            self.log.info(f"total: {num_items} real images")
 
             item_subset = [(i * self.num_gpus + self.rank) % num_items
                            for i in range((num_items - 1) // self.num_gpus + 1)]
@@ -216,11 +218,15 @@ class FIDTracker():
         n_batch = num_sample // self.model_bs
         resid = num_sample % self.model_bs
         features_list = []
+        num_items = len(self.val_dataset)
+        item_subset = [(i * self.num_gpus + self.rank) % num_items
+                       for i in range((num_items - 1) // self.num_gpus + 1)]
 
         for class_idx in range(self.num_classes):
             loader = torch.utils.data.DataLoader(self.val_dataset,
                                                  batch_size=self.model_bs,
                                                  shuffle=False,
+                                                 sampler=item_subset,
                                                  num_workers=2)
             loader = sample_data(loader)
             features = []
@@ -353,4 +359,3 @@ if __name__ == '__main__':
             subprocess_fn(rank=0, args=args, cfg=cfg, temp_dir=temp_dir)
         else:
             torch.multiprocessing.spawn(fn=subprocess_fn, args=(args, cfg, temp_dir), nprocs=args.num_gpus)
-

@@ -1,6 +1,7 @@
 from io import BytesIO
 from pathlib import Path
 from functools import partial
+from collections import namedtuple
 import pickle
 from tqdm import tqdm
 import lmdb
@@ -195,27 +196,31 @@ class GenericDataset(data.Dataset):
 
 class DeepFashionDataset(data.Dataset):
     def __init__(self, config, resolution, transform=None, split='train'):
-        root = Path(config.roots[0])
-        if config.roots[0].startswith('~'):
-            root = root.expanduser()
-
-        split_file = Path(root).parent / 'split.pkl'
-        self.face_dir = Path(root) / 'face'
-        self.mask_dir = Path(root) / 'mask'
-        self.target_dir = Path(root).parent / f'r{resolution}' / 'images'
-        print(split_file)
-        assert split_file.exists()
-        assert self.face_dir.exists() and self.mask_dir.exists() and self.target_dir.exists()
-
-        self.fileID = pickle.load(open(split_file, 'rb'))[split]
-        assert set(self.fileID) <= set(p.stem for p in self.face_dir.glob('*.png'))
-        assert set(self.fileID) <= set(p.stem for p in self.mask_dir.glob('*.png'))
-        assert set(self.fileID) <= set(p.stem for p in self.target_dir.glob('*.jpg'))
-
+        assert len(config.roots) == len(config.source) == 1
+        assert split in ['train', 'val', 'test', 'all']
+        root = Path(config.roots[0]).expanduser()
+        src = config.source[0]
         self.config = config
         self.resolution = resolution
         self.transform = transform
         self.mask_trf = transforms.ToTensor()
+
+        split_file = Path(root) / 'split.pkl'
+        assert split_file.exists()
+        split_map = pickle.load(open(split_file, 'rb'))
+        if split == 'all':
+            self.fileID = [ID for IDs in split_map.values() for ID in IDs]
+        else:
+            self.fileID = split_map[split]
+        self.fileID.sort()
+
+        self.face_dir = Path(root) / src / 'face'
+        self.mask_dir = Path(root) / src / 'mask'
+        self.target_dir = Path(root) / f'r{resolution}' / 'images'
+        assert self.face_dir.exists() and self.mask_dir.exists() and self.target_dir.exists()
+        assert set(self.fileID) <= set(p.stem for p in self.face_dir.glob('*.png'))
+        assert set(self.fileID) <= set(p.stem for p in self.mask_dir.glob('*.png'))
+        assert set(self.fileID) <= set(p.stem for p in self.target_dir.glob('*.jpg'))
 
     def __len__(self):
         return len(self.fileID)
@@ -233,7 +238,7 @@ class DeepFashionDataset(data.Dataset):
             target = self.transform(target)
         mask = self.mask_trf(mask)
 
-        return face, target, mask
+        return target, face, mask
 
 
 class ResamplingDataset(data.Dataset):
@@ -285,6 +290,68 @@ class ResamplingDataset(data.Dataset):
             mask = transforms.ToTensor()(mask.copy())
 
         return masked_body, face_img, mask
+
+
+class ResamplingDatasetV2(data.Dataset):
+    """  Resampling position & angles for fake faces
+    """
+    def __init__(self, config, resolution, split='train'):
+        assert len(config.roots) == len(config.source) == 1
+        assert split in ['train', 'val']
+        self.resolution = resolution
+        trf = [
+            transforms.ToTensor(),
+            transforms.Normalize([0.5] * 3, [0.5] * 3, inplace=True),
+        ]
+        self.transform = transforms.Compose(trf)
+        self.mask_trf = transforms.ToTensor()
+
+        # statistics
+        Gaussian = namedtuple('Gaussian', 'X_mean X_std cx_mean cx_std cy_mean cy_std')
+        self.big = Gaussian(78.08, 11.18, 517.075, 26.655, 131.60, 24.41)
+        self.small = Gaussian(44.56, 3.32, 517.075, 26.655, 100.36, 17.22)
+        self.rng = np.random.default_rng()
+
+        root = Path(config.roots[0]).expanduser() / config.source[0]
+        self.fake_dir = root / 'fake_face'
+        info_file = root / 'fake_face_phi.pkl'
+        assert self.fake_dir.exists() and info_file.exists()
+
+        info = pickle.load(open(info_file, 'rb'))  # file_stem, phi
+        total = len(info)
+        self.info = info[:total // 2] if split == 'train' else info[total // 2:]
+        print(f"total {len(self.info)} {split} images")
+
+    def __len__(self):
+        return len(self.info)
+
+    def __getitem__(self, idx):
+        res = self.resolution
+        fake_face = Image.open(self.fake_dir / f"{self.info[idx][0]}.png")
+        phi = self.info[idx][1]
+        dist = self.big if np.random.random() < 0.7 else self.small
+        rho = self.rng.normal(loc=dist.X_mean, scale=dist.X_std, size=())
+        cx = self.rng.normal(loc=dist.cx_mean, scale=dist.cx_std, size=())
+        cy = self.rng.normal(loc=dist.cy_mean, scale=dist.cy_std, size=())
+        c = np.hstack([cx, cy])
+        x = np.hstack([rho * np.cos(phi), rho * np.sin(phi)])
+        y = np.flipud(x) * [-1, 1]
+        quad = np.stack([c - x - y, c - x + y, c + x + y, c + x - y]).astype(np.float32)
+
+        face_np = np.asarray(fake_face.resize((1024, 1024), Image.ANTIALIAS))
+        src = np.array([[0, 0], [0, 1024], [1024, 1024], [1024, 0]], dtype=np.float32)
+
+        M = cv2.getPerspectiveTransform(src, quad)
+        masked_body = cv2.warpPerspective(face_np, M, (1024, 1024), borderMode=cv2.BORDER_CONSTANT, borderValue=(127, 127, 127))
+        mask = Image.fromarray(np.any(masked_body != 127, axis=-1).astype(np.uint8) * 255, mode='L').resize((res, res), Image.NEAREST)
+        masked_body = Image.fromarray(masked_body).resize((res, res), Image.ANTIALIAS)
+
+        if self.transform is not None:
+            fake_face = self.transform(fake_face)
+            masked_body = self.transform(masked_body)
+        mask = self.mask_trf(mask)
+
+        return masked_body, fake_face, mask
 
 
 def data_sampler(dataset, shuffle, distributed):
