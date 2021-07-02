@@ -1,13 +1,15 @@
+import pickle
+from time import time
 from io import BytesIO
 from pathlib import Path
 from functools import partial
 from collections import namedtuple
-import pickle
-from tqdm import tqdm
+
 import lmdb
 import cv2
 import torch
 import numpy as np
+from tqdm import tqdm
 from PIL import Image
 from torch.utils import data
 from torchvision import transforms
@@ -220,7 +222,7 @@ class DeepFashionDataset(data.Dataset):
         assert self.face_dir.exists() and self.mask_dir.exists() and self.target_dir.exists()
         assert set(self.fileID) <= set(p.stem for p in self.face_dir.glob('*.png'))
         assert set(self.fileID) <= set(p.stem for p in self.mask_dir.glob('*.png'))
-        assert set(self.fileID) <= set(p.stem for p in self.target_dir.glob('*.jpg'))
+        assert set(self.fileID) <= set(p.stem for p in self.target_dir.glob('*.png'))
 
     def __len__(self):
         return len(self.fileID)
@@ -230,7 +232,7 @@ class DeepFashionDataset(data.Dataset):
         res = self.resolution
         face = Image.open(self.face_dir / filename).resize((res, res), Image.ANTIALIAS)
         mask = Image.open(self.mask_dir / filename).resize((res, res), Image.NEAREST)
-        target = Image.open(self.target_dir / filename.replace('png', 'jpg'))
+        target = Image.open(self.target_dir / filename)
         assert face.mode == 'RGB' and mask.mode == 'L' and target.mode == 'RGB'
 
         if self.transform is not None:
@@ -320,7 +322,6 @@ class ResamplingDatasetV2(data.Dataset):
         info = pickle.load(open(info_file, 'rb'))  # file_stem, phi
         total = len(info)
         self.info = info[:total // 2] if split == 'train' else info[total // 2:]
-        print(f"total {len(self.info)} {split} images")
 
     def __len__(self):
         return len(self.info)
