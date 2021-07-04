@@ -297,7 +297,7 @@ class ResamplingDataset(data.Dataset):
 class ResamplingDatasetV2(data.Dataset):
     """  Resampling position & angles for fake faces
     """
-    def __init__(self, config, resolution, split='train'):
+    def __init__(self, config, resolution, split='train', **kwargs):
         assert len(config.roots) == len(config.source) == 1
         assert split in ['train', 'val']
         self.resolution = resolution

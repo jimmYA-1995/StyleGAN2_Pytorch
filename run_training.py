@@ -91,6 +91,10 @@ class Trainer():
         if self.local_rank == 0:
             self.log.info("get dataloader ...")
         self.loader = get_dataloader(cfg, self.batch_gpu, distributed=self.ddp)
+        cfg2 = cfg.clone()
+        cfg2.defrost()
+        cfg2.DATASET.dataset = 'ResamplingDatasetV2'
+        self.loader2 = get_dataloader(cfg2, self.batch_gpu, distributed=self.ddp)
 
         # Define model
         label_size = 0 if self.num_classes == 1 else self.num_classes
@@ -199,6 +203,7 @@ class Trainer():
         d_module = self.d.module if self.ddp else self.d
 
         loader = sample_data(self.loader)
+        loader2 = sample_data(self.loader2)
         if self.local_rank == 0:
             pbar = None
 
@@ -206,7 +211,11 @@ class Trainer():
         for i in range(self.start_iter, cfg_t.iteration):
             s = time()
             body_imgs, face_imgs, mask = [x.to(self.device) for x in next(loader)]
-            masked_body = torch.cat([body_imgs * mask, mask], dim=1)
+            if i % 2 == 0:
+                _body_imgs, face_imgs, mask = [x.to(self.device) for x in next(loader2)]
+                masked_body = torch.cat([_body_imgs * mask, mask], dim=1)
+            else:
+                masked_body = torch.cat([body_imgs * mask, mask], dim=1)
 
             # D.
             requires_grad(self.g, False)
@@ -263,7 +272,7 @@ class Trainer():
                 aug_fake_img = self.augment_pipe(fake_img) if cfg_d.ADA else fake_img
                 fake_pred = self.d(aug_fake_img, labels_in=fake_label)
                 g_adv_loss = nonsaturating_loss(fake_pred)
-                g_rec_loss = self.rec_loss(body_imgs, fake_img, mask=mask)
+                g_rec_loss = self.rec_loss(masked_body[:, :3, :, :], fake_img, mask=mask)  #
                 g_loss = g_adv_loss + g_rec_loss
                 stats['g'] = g_adv_loss.detach()
                 stats['g_rec'] = g_rec_loss.detach()
