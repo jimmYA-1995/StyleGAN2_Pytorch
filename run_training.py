@@ -178,7 +178,7 @@ class Trainer():
 
         # init. FID tracker if needed.
         if 'fid' in self.metrics:
-            self.fid_tracker = FIDTracker(cfg, self.local_rank, self.num_gpus, self.out_dir, use_tqdm=(self.local_rank == 0))
+            self.fid_tracker = FIDTracker(cfg, self.local_rank, self.num_gpus, self.out_dir)
 
     def train(self):
         cfg_d = self.cfg.DATASET
@@ -403,7 +403,7 @@ class Trainer():
 
         # ugly. concat val data from real dataset & resampling
         datasets = [get_dataset(cfg.DATASET, cfg.resolution, split='val'),
-                    ResamplingDatasetV2(cfg.DATASET, cfg.resolution)]
+                    ResamplingDatasetV2(cfg.DATASET, cfg.resolution, split='val')]
         for ds in datasets:
             loader = torch.utils.data.DataLoader(ds, batch_size=self.n_sample // len(datasets), shuffle=False, num_workers=0)
             body_imgs, face_imgs, mask = [x.to(self.device) for x in next(iter(loader))]

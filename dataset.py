@@ -295,9 +295,12 @@ class ResamplingDataset(data.Dataset):
 
 
 class ResamplingDatasetV2(data.Dataset):
-    """  Resampling position & angles for fake faces
-    """
+    Gaussian = namedtuple('Gaussian', 'X_mean X_std cx_mean cx_std cy_mean cy_std')
+    Gaussian.__qualname__ = "ResamplingDatasetV2.Gaussian"
+
     def __init__(self, config, resolution, split='train', **kwargs):
+        """  Resampling position & angles for fake faces
+        """
         assert len(config.roots) == len(config.source) == 1
         assert split in ['train', 'val']
         self.resolution = resolution
@@ -309,9 +312,8 @@ class ResamplingDatasetV2(data.Dataset):
         self.mask_trf = transforms.ToTensor()
 
         # statistics
-        Gaussian = namedtuple('Gaussian', 'X_mean X_std cx_mean cx_std cy_mean cy_std')
-        self.big = Gaussian(78.08, 11.18, 517.075, 26.655, 131.60, 24.41)
-        self.small = Gaussian(44.56, 3.32, 517.075, 26.655, 100.36, 17.22)
+        self.big = ResamplingDatasetV2.Gaussian(78.08, 11.18, 517.075, 26.655, 131.60, 24.41)
+        self.small = ResamplingDatasetV2.Gaussian(44.56, 3.32, 517.075, 26.655, 100.36, 17.22)
         self.rng = np.random.default_rng()
 
         root = Path(config.roots[0]).expanduser() / config.source[0]

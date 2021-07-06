@@ -1,6 +1,5 @@
 import os
 import time
-import copy
 import json
 import pickle
 import logging
@@ -8,12 +7,9 @@ from pathlib import Path
 
 import torch
 import numpy as np
-import skimage.io as io
+import scipy.linalg
 import matplotlib.pyplot as plt
-from scipy import linalg
-from tqdm import tqdm
-from torch import nn
-from torchvision import transforms, utils
+from tqdm import trange
 
 import misc
 from dataset import get_dataset, ResamplingDatasetV2
@@ -26,30 +22,39 @@ def sample_data(loader):
             yield batch
 
 
-class FIDTracker():
-    def __init__(self, cfg, rank, num_gpus, out_dir, use_tqdm=False):
-        print(f"[{os.getpid()}] rank: {rank}({num_gpus} gpus)")
-        fid_cfg = cfg.EVAL.FID
-        inception_path = fid_cfg.inception_cache
+def pbar(rank, force=False):
+    def range_wrapper(*args, **kwargs):
+        return trange(*args, **kwargs) if rank == 0 or force else range(*args, **kwargs)
+    return range_wrapper
 
-        self.num_gpus = num_gpus
+
+class FIDTracker():
+    def __init__(self, cfg, rank, num_gpus, out_dir):
+        print(f"[{os.getpid()}] rank: {rank}({num_gpus} gpus)")
+
         self.rank = rank
+        self.num_gpus = num_gpus
         self.device = torch.device('cuda', rank) if num_gpus > 1 else 'cuda'
-        self.cfg = fid_cfg
+        self.cfg = cfg.EVAL.FID
+        self.cfg_d = cfg.DATASET
         self.log = logging.getLogger(f'GPU{rank}')
         self.out_dir = Path(out_dir) if isinstance(out_dir, str) else out_dir
+
+        # metrics
         self.real_means = None  # [ndarray(2048) float32] * num_class
         self.real_covs = None  # [ndarray(2048, 2048) float64] * num_class
         self.idx_to_class = []
         self.k_iters = []
         self.fids = []
+
+        self.resolution = cfg.resolution
+        self.val_dataset = None  # dataset for model
         self.latent_size = cfg.MODEL.z_dim
         self.conditional = True if cfg.num_classes > 1 else False
         self.num_classes = cfg.num_classes
         self.model_bs = 8
-        self.use_tqdm = use_tqdm
+        self.pbar = pbar(rank)
 
-        # get inception V3 model
         start = time.time()
         self.log.info("load inception model...")
         if num_gpus == 1:
@@ -63,9 +68,9 @@ class FIDTracker():
         self.log.info("load inception model complete ({:.2f})".format(time.time() - start))
 
         # get features for real images
-        if inception_path:
+        if cfg.EVAL.FID.inception_cache:
             self.log.info("load inception from cache file")
-            with open(inception_path, 'rb') as f:
+            with open(cfg.EVAL.FID.inception_cache, 'rb') as f:
                 embeds = pickle.load(f)
                 self.real_means = embeds['mean']
                 self.real_covs = embeds['cov']
@@ -77,47 +82,47 @@ class FIDTracker():
                 with open(self.out_dir / 'inception_cache.pkl', 'wb') as f:
                     pickle.dump(dict(mean=self.real_means, cov=self.real_covs, idx_to_class=self.idx_to_class), f)
 
-        # self.val_dataset = ResamplingDataset(cfg.DATASET, cfg.resolution)
-        self.val_dataset = ResamplingDatasetV2(cfg.DATASET, 256, split='val')
-        # self.val_dataset = get_dataset(cfg.DATASET, cfg.resolution, split='val')
-        self.log.info(f"validation data samples: {len(self.val_dataset)}")
-    
+    @classmethod
+    def _calc_fid(cls, real_mean, real_cov, sample_mean, sample_cov, eps=1e-6):
+        cov_sqrt, _ = scipy.linalg.sqrtm(sample_cov @ real_cov, disp=False)
+
+        if not np.isfinite(cov_sqrt).all():
+            print('product of cov matrices is singular')
+            offset = np.eye(sample_cov.shape[0]) * eps
+            cov_sqrt = scipy.linalg.sqrtm((sample_cov + offset) @ (real_cov + offset))
+
+        if np.iscomplexobj(cov_sqrt):
+            print("cov_sqrt is complex number")
+            if not np.allclose(np.diagonal(cov_sqrt).imag, 0, atol=1e-3):
+                m = np.max(np.abs(cov_sqrt.imag))
+
+                raise ValueError(f'Imaginary component {m}')
+
+            cov_sqrt = cov_sqrt.real
+
+        mean_diff = sample_mean - real_mean
+        mean_norm = mean_diff @ mean_diff
+
+        trace = np.trace(sample_cov) + np.trace(real_cov) - 2 * np.trace(cov_sqrt)
+        return mean_norm + trace
+
     def calc_fid(self, candidate, k_iter=0, save=False, eps=1e-6):
         assert self.real_means is not None and self.real_covs is not None
         start = time.time()
-        
+        fids = []
+
         # single dispatch
         if isinstance(candidate, torch.nn.Module):
             self.log.info(f"get FID on {k_iter * 1000} iteration") 
             sample_means, sample_covs = self.extract_feature_from_model(candidate)
         else:
-            self.log.info(f"get FID on {candidate.DATASET.roots[0]} iteration")
+            self.log.info(f"get FID on images from {candidate.DATASET.roots[0]}")
             sample_means, sample_covs = self.extract_feature_from_images(candidate)
-
         assert len(sample_means) == len(self.real_means) == len(sample_covs) == len(self.real_covs)
-        fids = []
+
         for i, (sample_mean, sample_cov) in enumerate(zip(sample_means, sample_covs)):
-            self.log.debug(f"mean: {sample_mean.shape}, cov: {sample_cov.shape}")
-            cov_sqrt, _ = linalg.sqrtm(sample_cov @ self.real_covs[i], disp=False)
-            self.log.info("sqrtm done")
-            if not np.isfinite(cov_sqrt).all():
-                self.log.warning('product of cov matrices is singular')
-                offset = np.eye(sample_cov.shape[0]) * eps
-                cov_sqrt = linalg.sqrtm((sample_cov + offset) @ (self.real_covs[i] + offset))
-
-            if np.iscomplexobj(cov_sqrt):
-                if not np.allclose(np.diagonal(cov_sqrt).imag, 0, atol=1e-3):
-                    m = np.max(np.abs(cov_sqrt.imag))
-
-                    raise ValueError(f'Imaginary component {m}')
-
-                cov_sqrt = cov_sqrt.real
-
-            mean_diff = sample_mean - self.real_means[i]
-            mean_norm = mean_diff @ mean_diff
-
-            trace = np.trace(sample_cov) + np.trace(self.real_covs[i]) - 2 * np.trace(cov_sqrt)
-            fids.append(mean_norm + trace)
+            fid = FIDTracker._calc_fid(self.real_means[i], self.real_covs[i], sample_mean, sample_cov, eps=eps)
+            fids.append(fid)
 
         total_time = time.time() - start
         self.log.info(f'FID on {1000 * k_iter} iterations: "{fids}". [costs {total_time: .2f} sec(s)]')
@@ -142,32 +147,27 @@ class FIDTracker():
     @torch.no_grad()
     def extract_feature_from_images(self, cfg):
         means, covs = [], []
+        image_bs = 8
         for i in range(self.num_classes):
             start = time.time()
             self.idx_to_class.append(None)  # no class name now
-            self.log.info(f'extract features from real "{self.idx_to_class[i]}" images...')
-            dataset = get_dataset(cfg.DATASET, cfg.resolution, split='all')
-            num_items = len(dataset)
-            num_items = min(num_items, self.cfg.n_sample)
+            # self.log.info(f'extract features from real "{self.idx_to_class[i]}" images...')
+            dataset = get_dataset(cfg.DATASET, cfg.resolution, split='train')
+            num_items = min(len(dataset), self.cfg.n_sample)
             self.log.info(f"total: {num_items} real images")
 
             item_subset = [(i * self.num_gpus + self.rank) % num_items
                            for i in range((num_items - 1) // self.num_gpus + 1)]
-            self.log.info(f"#item subset: {len(item_subset)}")
+            self.log.debug(f"#item subset: {len(item_subset)}")
 
             dataloader = torch.utils.data.DataLoader(
-                dataset=dataset, sampler=item_subset, batch_size=4, num_workers=2)
+                dataset=dataset, sampler=item_subset, batch_size=image_bs, num_workers=2)
 
             features = []
             loader = iter(dataloader)
-            n_batch = len(item_subset) // self.cfg.batch_size
-            if len(item_subset) % self.cfg.batch_size != 0:
-                n_batch += 1
-            progress_bar = range(n_batch)
-            if self.use_tqdm:
-                progress_bar = tqdm(progress_bar)
+            n_batch = len(item_subset) // image_bs + int(len(item_subset) % image_bs != 0)
 
-            for _ in progress_bar:
+            for _ in self.pbar(n_batch):
                 imgs, *_ = next(loader)
                 imgs = imgs.to(self.device)
                 feature = self.inceptionV3(imgs)[0].view(imgs.shape[0], -1)
@@ -178,25 +178,30 @@ class FIDTracker():
                         torch.distributed.broadcast(y, src=src)
                         _features.append(y)
                     feature = torch.stack(_features, dim=1).flatten(0, 1)
-                    self.log.debug(f"feature: {feature.shape}")
                 features.append(feature)
 
-            features = torch.cat(features, 0).cpu().numpy()
+            features = torch.cat(features, 0)[:num_items].cpu().numpy()
             means.append(np.mean(features, 0))
             covs.append(np.cov(features, rowvar=False))
 
-            self.log.info(f"complete({round(time.time() - start, 2)} secs)."
+            self.log.info(f"complete({time.time() - start :.2f} secs). "
                           f"total extracted features: {features.shape[0]}")
         return means, covs
 
     @torch.no_grad()
-    def extract_feature_from_model(self, generator, k_iter):
-        
+    def extract_feature_from_model(self, generator):
+        if self.val_dataset is None:
+            # self.val_dataset = ResamplingDataset(self.cfg_d, self.resolution)
+            self.val_dataset = ResamplingDatasetV2(self.cfg_d, self.resolution, split='val')
+            # self.val_dataset = get_dataset(self.cfg_d, self.resolution, split='val')
+            self.log.info(f"validation data samples: {len(self.val_dataset)}")
+            assert self.cfg.n_sample <= len(self.val_dataset)
+
         sample_means, sample_covs = [], []
         num_sample = self.cfg.n_sample // self.num_gpus
         n_batch = num_sample // self.model_bs
         resid = num_sample % self.model_bs
-        num_items = len(self.val_dataset)
+        num_items = min(len(self.val_dataset), self.cfg.n_sample)
         item_subset = [(i * self.num_gpus + self.rank) % num_items
                        for i in range((num_items - 1) // self.num_gpus + 1)]
 
@@ -208,11 +213,8 @@ class FIDTracker():
                                                  num_workers=2)
             loader = sample_data(loader)
             features = []
-            idx_iterator = range(n_batch + 1)
-            if self.use_tqdm:
-                idx_iterator = tqdm(idx_iterator)
 
-            for i in idx_iterator:
+            for i in self.pbar(n_batch + 1):
                 batch = resid if i == n_batch else self.model_bs
                 if batch == 0:
                     continue
@@ -223,14 +225,6 @@ class FIDTracker():
                 fake_label = torch.LongTensor([class_idx] * batch).to(self.device)
 
                 imgs, _ = generator([latent], labels_in=fake_label, style_in=face_imgs, content_in=masked_body, noise_mode='const')
-                # if self.rank == 0:
-                #     utils.save_image(
-                #         imgs,
-                #         self.out_dir / f'fake-{i}.png',
-                #         nrow=4,
-                #         normalize=True,
-                #         range=(-1, 1),
-                #     )
 
                 feature = self.inceptionV3(imgs[:, :3, :, :])[0].view(imgs.shape[0], -1)
                 if self.num_gpus > 1:
@@ -240,10 +234,9 @@ class FIDTracker():
                         torch.distributed.broadcast(y, src=src)
                         _features.append(y)
                     feature = torch.stack(_features, dim=1).flatten(0, 1)
-                    self.log.debug(f"feature: {feature.shape}")
                 features.append(feature)
 
-            features = torch.cat(features, 0).cpu().numpy()
+            features = torch.cat(features, 0)[:num_items].cpu().numpy()
             sample_means.append(np.mean(features, 0))
             sample_covs.append(np.cov(features, rowvar=False))
 
@@ -263,17 +256,23 @@ class FIDTracker():
 
 def subprocess_fn(rank, args, cfg, temp_dir):
     from models import Generator
-    args.local_rank = rank
     if args.num_gpus > 1:
+        os.environ['OMP_NUM_THREADS'] = '1'  # for scipy performance issue
         torch.cuda.set_device(rank)
         init_method = f"file://{os.path.join(temp_dir, '.torch_distributed_init')}"
         torch.distributed.init_process_group(backend='nccl', init_method=init_method, rank=rank, world_size=args.num_gpus)
+    args.local_rank = rank  # compatibility
     misc.create_logger(**vars(args))
     device = torch.device('cuda', rank) if args.num_gpus > 1 else 'cuda'
-    fid_tracker = FIDTracker(cfg, rank, args.num_gpus, args.out_dir, use_tqdm=True if rank == 0 else False)
-        
+    fid_tracker = FIDTracker(cfg, rank, args.num_gpus, args.out_dir)
+
     if args.real:
-        fid_tracker.calc_fid(cfg)
+        fid_tracker.calc_fid(cfg, save=args.save)
+        return
+
+    if args.ckpt is None:
+        if rank == 0:
+            print("only get statistics on real data. return...")
         return
 
     args.ckpt = Path(args.ckpt)
@@ -292,18 +291,17 @@ def subprocess_fn(rank, args, cfg, temp_dir):
             cfg.resolution,
             extra_channels=cfg.MODEL.extra_channel,
             use_style_encoder=cfg.MODEL.use_style_encoder,
-            use_content_encoder=cfg.MODEL.use_content_encoder,
             map_kwargs=cfg.MODEL.G_MAP,
             style_encoder_kwargs=cfg.MODEL.STYLE_ENCODER,
             synthesis_kwargs=cfg.MODEL.G_SYNTHESIS,
             is_training=False
         )
         g.load_state_dict(ckpt['g_ema'])
-        g = copy.deepcopy(g).eval().requires_grad_(False).to(device)
+        g = g.eval().requires_grad_(False).to(device)
 
         if args.num_gpus > 1:
             torch.distributed.barrier()
-        fid_tracker.calc_fid(g, k_iter=k_iter, save=True)
+        fid_tracker.calc_fid(g, k_iter=k_iter, save=args.save)
 
     if rank == 0:
         fid_tracker.plot_fid()
@@ -320,8 +318,9 @@ if __name__ == '__main__':
     parser.add_argument("--cfg", type=str, help="path to the configuration file")
     parser.add_argument("--gpus", type=int, default=1, dest='num_gpus')
     parser.add_argument('--out_dir', type=str, default='/tmp/fid_result')
-    parser.add_argument('--ckpt', type=str, metavar='CHECKPOINT', help='model ckpt or dir')
+    parser.add_argument('--ckpt', type=str, default=None, metavar='CHECKPOINT', help='model ckpt or dir')
     parser.add_argument('--real', action='store_true', default=False, help='get FID between 2 real image dataset')
+    parser.add_argument('--save', action='store_true', default=False, help='save fid.txt')
     parser.add_argument("--debug", action='store_true', default=False, help="whether to use debug mode")
 
     args = parser.parse_args()
