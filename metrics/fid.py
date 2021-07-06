@@ -276,7 +276,7 @@ def subprocess_fn(rank, args, cfg, temp_dir):
         return
 
     args.ckpt = Path(args.ckpt)
-    args.ckpt = sorted(args.ckpt.glob('*.pt')) if args.ckpt.is_dir() else [args.ckpt]
+    args.ckpt = sorted(p for p in args.ckpt.glob('*.pt')) if args.ckpt.is_dir() else [args.ckpt]
     for ckpt in args.ckpt:
         print(f"calculating fid of {str(ckpt)}")
         k_iter = int(str(ckpt.name)[5:11]) / 1e3
