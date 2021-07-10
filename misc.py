@@ -4,6 +4,9 @@ from pathlib import Path
 from typing import Any
 
 
+class UserError(Exception):
+    pass
+
 class EasyDict(dict):
     """Convenience class that behaves like a dict but allows access with the attribute syntax."""
 
@@ -87,14 +90,14 @@ def prepare_training(args, cfg):
             print('creating {}'.format(root_dir))
             root_dir.mkdir(parents=True)
 
-        cfg_name = os.path.basename(args.cfg).split('.')[0] if args.cfg else 'default'
-        exist_IDs = [int(x.name[:5])
-                     for x in root_dir.glob("[0-9][0-9][0-9][0-9][0-9]-*")
-                     if x.is_dir()]
-        exp_ID = max(exist_IDs) + 1 if exist_IDs else 0
-        exp_ID = str(exp_ID).zfill(5)
+        cfg_name = cfg.name if cfg.name else 'default'
+        existing_serial_num = [int(x.name[:5])
+                               for x in root_dir.glob("[0-9][0-9][0-9][0-9][0-9]-*")
+                               if x.is_dir()]
+        serial_num = max(existing_serial_num) + 1 if existing_serial_num else 0
+        serial_num = str(serial_num).zfill(5)
 
-        args.out_dir = root_dir / f'{exp_ID}-{args.num_gpus}gpu-{cfg_name}'
+        args.out_dir = root_dir / f'{serial_num}-{args.wandb_id}-{args.num_gpus}gpu-{cfg_name}'
 
     (args.out_dir / 'checkpoints').mkdir(parents=True)
     (args.out_dir / 'samples').mkdir(parents=True)

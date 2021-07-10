@@ -27,6 +27,10 @@ from losses import nonsaturating_loss, path_regularize, logistic_loss, d_r1_loss
 from metrics.fid import FIDTracker
 
 
+class UserError(Exception):
+    pass
+
+
 def requires_grad(model, flag=True):
     for p in model.parameters():
         p.requires_grad = flag
@@ -60,7 +64,6 @@ class Trainer():
         self.ddp = args.num_gpus > 1
         self.out_dir = args.out_dir
         self.use_wandb = args.wandb
-        self.start_iter = 0
         self.n_sample = cfg.n_sample
         self.num_classes = cfg.num_classes
         self.z_dim = cfg.MODEL.z_dim
@@ -132,6 +135,7 @@ class Trainer():
         self.d_optim = optim.Adam(self.d.parameters(), lr=cfg.TRAIN.lrate * d_reg_ratio, betas=(0 ** d_reg_ratio, 0.99 ** d_reg_ratio))
 
         # resume from checkpoints if given
+        self.start_iter = 0
         if cfg.TRAIN.ckpt:
             print(f'resume model from {cfg.TRAIN.ckpt}')
             ckpt = torch.load(cfg.TRAIN.ckpt, map_location=self.device)
@@ -150,7 +154,7 @@ class Trainer():
             try:
                 self.start_iter = int(Path(cfg.TRAIN.ckpt).stem.split('-')[1])
             except ValueError:
-                self.log.error("Fail to parse #iteration from checkpoint filename. Valid format is 'ckpt-<#iter>.pt'")
+                raise UserError("Fail to parse #iteration from checkpoint filename. Valid format is 'ckpt-<#iter>.pt'")
 
         # Print network summary tables
         if self.local_rank == 0:
@@ -380,7 +384,7 @@ class Trainer():
                     if cfg_d.ADA and cfg_d.ADA_target > 0:
                         wandb_stats['Real Sign'] = ada_sign.item()
 
-                    wandb.log(wandb_stats)
+                    wandb.log(data=wandb_stats, step=i)
 
                 if pbar is None:
                     print(f"1st iter: {time() - s} sec")
@@ -481,9 +485,36 @@ if __name__ == '__main__':
         torch.distributed.barrier()
 
     if args.num_gpus == 1 or args.local_rank == 0:
+        args.wandb_id = 'noWandB'
+        if args.wandb:
+            print(f"initialize wandb project: {Path(args.cfg).stem}")
+
+            run = wandb.init(
+                project=f'stylegan2-{Path(args.cfg).stem}',
+                config=convert_to_dict(cfg),
+                notes=cfg.description,
+                tags=['finetune'] if cfg.TRAIN.ckpt else None,
+            )
+
+            if cfg.name:
+                run.name = cfg.name
+
+            if run.resumed:
+                assert cfg.TRAIN.ckpt
+                try:
+                    start_iter = int(Path(cfg.TRAIN.ckpt).stem.split('-')[1])
+                except ValueError:
+                    raise UserError("Fail to parse #iteration from checkpoint filename. Valid format is 'ckpt-<#iter>.pt'")
+
+                if run.starting_step != start_iter:
+                    raise UserError(f"non-increased step in log cal is not allowed in Wandb."
+                                    f"Please unset WANDB_RESUME env variable or set correct checkpoint.")
+
+            args.wandb_id = run.id
+
         misc.prepare_training(args, cfg)
-        print(cfg)
         shutil.copy(args.cfg, args.out_dir)
+        print(cfg)
 
     logger = misc.create_logger(**vars(args))
 
@@ -491,17 +522,6 @@ if __name__ == '__main__':
     logger.info("initialize trainer...")
     trainer = Trainer(args, cfg, logger)
     logger.info(f"trainer initialized. ({time() - t :.2f} sec)")
-
-    if args.local_rank == 0 and args.wandb:
-        if args.debug:
-            os.environ['WANDB_MODE'] = "dryrun"
-        logger.info(f"initialize wandb project: {Path(args.cfg).stem}")
-        run = wandb.init(project=f'stylegan2-{Path(args.cfg).stem}',
-                         config=convert_to_dict(cfg),
-                         # id="",
-                         # resume="allow",
-        )
-        # logger.info(f"run-name: {run.name}")
 
     cfg.freeze()
     trainer.train()

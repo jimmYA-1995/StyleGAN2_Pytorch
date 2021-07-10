@@ -5,6 +5,7 @@ _VALID_TYPES = {tuple, list, str, int, float, bool}
 
 # Default configuration. Overriden by experiments/<something>.yml with `CfgNode.merge_from_file`
 _C = CN()
+_C.name = ''
 _C.description = ''
 _C.outdir = 'results'
 _C.n_sample = 64
