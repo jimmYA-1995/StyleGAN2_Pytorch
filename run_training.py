@@ -27,6 +27,10 @@ from losses import nonsaturating_loss, path_regularize, logistic_loss, d_r1_loss
 from metrics.fid import FIDTracker
 
 
+class UserError(Exception):
+    pass
+
+
 def requires_grad(model, flag=True):
     for p in model.parameters():
         p.requires_grad = flag
@@ -150,7 +154,7 @@ class Trainer():
             try:
                 self.start_iter = int(Path(cfg.TRAIN.ckpt).stem.split('-')[1])
             except ValueError:
-                self.log.error("Fail to parse #iteration from checkpoint filename. Valid format is 'ckpt-<#iter>.pt'")
+                raise UserError("Fail to parse #iteration from checkpoint filename. Valid format is 'ckpt-<#iter>.pt'")
 
         # Print network summary tables
         if self.local_rank == 0:
@@ -494,6 +498,17 @@ if __name__ == '__main__':
 
             if cfg.name:
                 run.name = cfg.name
+
+            if run.resumed:
+                assert cfg.TRAIN.ckpt
+                try:
+                    start_iter = int(Path(cfg.TRAIN.ckpt).stem.split('-')[1])
+                except ValueError:
+                    raise UserError("Fail to parse #iteration from checkpoint filename. Valid format is 'ckpt-<#iter>.pt'")
+
+                if run.starting_step != start_iter:
+                    raise UserError(f"non-increased step in log cal is not allowed in Wandb."
+                                    f"Please unset WANDB_RESUME env variable or set correct checkpoint.")
 
             args.wandb_id = run.id
 
