@@ -94,7 +94,7 @@ def prepare_training(args, cfg):
         exp_ID = max(exist_IDs) + 1 if exist_IDs else 0
         exp_ID = str(exp_ID).zfill(5)
 
-        args.out_dir = root_dir / f'{exp_ID}-{args.num_gpus}gpu-{cfg_name}'
+        args.out_dir = root_dir / f'{exp_ID}-{args.wandb_id}-{args.num_gpus}gpu-{cfg_name}'
 
     (args.out_dir / 'checkpoints').mkdir(parents=True)
     (args.out_dir / 'samples').mkdir(parents=True)
