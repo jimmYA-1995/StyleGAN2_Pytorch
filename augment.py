@@ -180,6 +180,10 @@ class AugmentPipe(torch.nn.Module):
 
     def forward(self, images, debug_percentile=None):
         assert isinstance(images, torch.Tensor) and images.ndim == 4
+        mask_input = None
+        if images.shape[1] == 4:
+            images, mask_input = torch.split(images, [3, 1], dim=1)
+
         batch_size, num_channels, height, width = images.shape
         device = images.device
         if debug_percentile is not None:
@@ -284,10 +288,14 @@ class AugmentPipe(torch.nn.Module):
 
             # Pad image and adjust origin.
             images = torch.nn.functional.pad(input=images, pad=[mx0,mx1,my0,my1], mode='reflect')
+            if mask_input is not None:
+                mask_input = torch.nn.functional.pad(input=mask_input, pad=[mx0,mx1,my0,my1], mode='reflect')
             G_inv = translate2d((mx0 - mx1) / 2, (my0 - my1) / 2) @ G_inv
 
             # Upsample.
             images = upfirdn2d.upsample2d(x=images, f=self.Hz_geom, up=2)
+            if mask_input is not None:
+                mask_input = upfirdn2d.upsample2d(x=mask_input, f=self.Hz_geom, up=2)
             G_inv = scale2d(2, 2, device=device) @ G_inv @ scale2d_inv(2, 2, device=device)
             G_inv = translate2d(-0.5, -0.5, device=device) @ G_inv @ translate2d_inv(-0.5, -0.5, device=device)
 
@@ -296,9 +304,13 @@ class AugmentPipe(torch.nn.Module):
             G_inv = scale2d(2 / images.shape[3], 2 / images.shape[2], device=device) @ G_inv @ scale2d_inv(2 / shape[3], 2 / shape[2], device=device)
             grid = torch.nn.functional.affine_grid(theta=G_inv[:,:2,:], size=shape, align_corners=False)
             images = grid_sample_gradfix.grid_sample(images, grid)
+            if mask_input is not None:
+                mask_input = grid_sample_gradfix.grid_sample(mask_input, grid)
 
             # Downsample and crop.
             images = upfirdn2d.downsample2d(x=images, f=self.Hz_geom, down=2, padding=-Hz_pad*2, flip_filter=True)
+            if mask_input is not None:
+                mask_input = upfirdn2d.downsample2d(x=mask_input, f=self.Hz_geom, down=2, padding=-Hz_pad*2, flip_filter=True)
 
         # --------------------------------------------
         # Select parameters for color transformations.
@@ -426,6 +438,8 @@ class AugmentPipe(torch.nn.Module):
             mask = torch.logical_or(mask_x, mask_y).to(torch.float32)
             images = images * mask
 
+        if mask_input is not None:
+            return torch.cat([images, mask_input], dim=1)
         return images
 
 #----------------------------------------------------------------------------

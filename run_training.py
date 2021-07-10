@@ -221,6 +221,9 @@ class Trainer():
                 masked_body = torch.cat([_body_imgs * mask, mask], dim=1)
             else:
                 masked_body = torch.cat([body_imgs * mask, mask], dim=1)
+            
+            body_imgs = torch.cat([body_imgs, real_mask], dim=1)
+            aug_body_imgs = self.augment_pipe(body_imgs) if cfg_d.ADA else body_imgs
 
             # D.
             requires_grad(self.g, False)
@@ -230,12 +233,12 @@ class Trainer():
                 noise = mixing_noise(self.batch_gpu, self.z_dim, cfg_t.style_mixing_prob, self.device)
                 fake_label = torch.randint(self.num_classes, (self.batch_gpu,), device=self.device) if self.num_classes > 1 else None
                 fake_img, _ = self.g(noise, labels_in=fake_label, style_in=face_imgs, content_in=masked_body)
+                
+                fake_img_4ch = torch.cat([fake_img, masked_body[:, 3:, :, :]], dim=1)
+                aug_fake_img = self.augment_pipe(fake_img_4ch) if cfg_d.ADA else fake_img_4ch
 
-                aug_fake_img = self.augment_pipe(fake_img) if cfg_d.ADA else fake_img
-                aug_body_imgs = self.augment_pipe(body_imgs) if cfg_d.ADA else body_imgs
-
-                fake_pred = self.d(torch.cat([aug_fake_img, masked_body[:, 3:, :, :]], dim=1), labels_in=fake_label)
-                real_pred = self.d(torch.cat([aug_body_imgs, real_mask], dim=1), labels_in=fake_label)
+                fake_pred = self.d(aug_fake_img, labels_in=fake_label)
+                real_pred = self.d(aug_body_imgs, labels_in=fake_label)
 
                 if cfg_d.ADA and (cfg_d.ADA_target) > 0:
                     ada_moments[0].add_(torch.ones_like(real_pred).sum())
@@ -256,7 +259,7 @@ class Trainer():
                 self.d.zero_grad(set_to_none=True)
                 aug_body_imgs.requires_grad = True
                 with autocast(enabled=self.autocast):
-                    real_pred = self.d(torch.cat([aug_body_imgs, real_mask], dim=1))
+                    real_pred = self.d(aug_body_imgs)
                     r1_loss = d_r1_loss(real_pred, aug_body_imgs)
                     Dreg_loss = cfg_t.r1 / 2 * r1_loss * cfg_t.Dreg_every + 0 * real_pred[0]
 
@@ -273,11 +276,13 @@ class Trainer():
                 noise = mixing_noise(self.batch_gpu, self.z_dim, cfg_t.style_mixing_prob, self.device)
                 fake_label = torch.randint(self.num_classes, (self.batch_gpu,), device=self.device) if self.num_classes > 1 else None
                 fake_img, _ = self.g(noise, labels_in=fake_label, style_in=face_imgs, content_in=masked_body)
+                
+                fake_img_4ch = torch.cat([fake_img, masked_body[:, 3:, :, :]], dim=1)
+                aug_fake_img = self.augment_pipe(fake_img_4ch) if cfg_d.ADA else fake_img_4ch
 
-                aug_fake_img = self.augment_pipe(fake_img) if cfg_d.ADA else fake_img
-                fake_pred = self.d(torch.cat([aug_fake_img, masked_body[:, 3:, :, :]], dim=1), labels_in=fake_label)
+                fake_pred = self.d(aug_fake_img, labels_in=fake_label)
                 g_adv_loss = nonsaturating_loss(fake_pred)
-                g_rec_loss = self.rec_loss(masked_body[:, :3, :, :], fake_img, mask=mask)  #
+                g_rec_loss = self.rec_loss(masked_body[:, :3, :, :], fake_img, mask=mask)
                 g_loss = g_adv_loss + g_rec_loss
                 stats['g'] = g_adv_loss.detach()
                 stats['g_rec'] = g_rec_loss.detach()
