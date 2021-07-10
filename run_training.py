@@ -116,7 +116,7 @@ class Trainer():
         self.d = Discriminator(
             label_size,
             cfg.resolution,
-            extra_channels=cfg.MODEL.extra_channel
+            extra_channels=1
         ).to(self.device)
 
         self.g_ema = copy.deepcopy(self.g).eval()
@@ -163,7 +163,7 @@ class Trainer():
             face = torch.empty([self.batch_gpu, 3, cfg.resolution, cfg.resolution], device=self.device)
             masked_body = torch.empty([self.batch_gpu, 4, cfg.resolution, cfg.resolution], device=self.device)
             img, _ = print_module_summary(self.g, [z, c, face, masked_body])
-            print_module_summary(self.d, [img, c])
+            print_module_summary(self.d, [torch.cat([img, masked_body[:, 3:, :, :]], dim=1), c])
 
         if self.ddp:
             self.g = nn.parallel.DistributedDataParallel(
@@ -215,6 +215,7 @@ class Trainer():
         for i in range(self.start_iter, cfg_t.iteration):
             s = time()
             body_imgs, face_imgs, mask = [x.to(self.device) for x in next(loader)]
+            real_mask = mask
             if i % 2 == 0:
                 _body_imgs, face_imgs, mask = [x.to(self.device) for x in next(loader2)]
                 masked_body = torch.cat([_body_imgs * mask, mask], dim=1)
@@ -233,8 +234,8 @@ class Trainer():
                 aug_fake_img = self.augment_pipe(fake_img) if cfg_d.ADA else fake_img
                 aug_body_imgs = self.augment_pipe(body_imgs) if cfg_d.ADA else body_imgs
 
-                fake_pred = self.d(aug_fake_img, labels_in=fake_label)
-                real_pred = self.d(aug_body_imgs, labels_in=fake_label)
+                fake_pred = self.d(torch.cat([aug_fake_img, masked_body[:, 3:, :, :]], dim=1), labels_in=fake_label)
+                real_pred = self.d(torch.cat([aug_body_imgs, real_mask], dim=1), labels_in=fake_label)
 
                 if cfg_d.ADA and (cfg_d.ADA_target) > 0:
                     ada_moments[0].add_(torch.ones_like(real_pred).sum())
@@ -255,7 +256,7 @@ class Trainer():
                 self.d.zero_grad(set_to_none=True)
                 aug_body_imgs.requires_grad = True
                 with autocast(enabled=self.autocast):
-                    real_pred = self.d(aug_body_imgs)
+                    real_pred = self.d(torch.cat([aug_body_imgs, real_mask], dim=1))
                     r1_loss = d_r1_loss(real_pred, aug_body_imgs)
                     Dreg_loss = cfg_t.r1 / 2 * r1_loss * cfg_t.Dreg_every + 0 * real_pred[0]
 
@@ -274,7 +275,7 @@ class Trainer():
                 fake_img, _ = self.g(noise, labels_in=fake_label, style_in=face_imgs, content_in=masked_body)
 
                 aug_fake_img = self.augment_pipe(fake_img) if cfg_d.ADA else fake_img
-                fake_pred = self.d(aug_fake_img, labels_in=fake_label)
+                fake_pred = self.d(torch.cat([aug_fake_img, masked_body[:, 3:, :, :]], dim=1), labels_in=fake_label)
                 g_adv_loss = nonsaturating_loss(fake_pred)
                 g_rec_loss = self.rec_loss(masked_body[:, :3, :, :], fake_img, mask=mask)  #
                 g_loss = g_adv_loss + g_rec_loss
