@@ -534,5 +534,7 @@ if __name__ == '__main__':
     trainer.train()
 
     if args.local_rank == 0:
-        run.finish()
+        if args.wandb:
+            run.finish()
+
         (args.out_dir / 'finish.txt').touch()
