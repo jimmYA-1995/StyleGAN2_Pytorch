@@ -90,7 +90,6 @@ class DeepFashionDataset(data.Dataset):
     Gaussian.__qualname__ = "DeepFashionDataset.Gaussian"
 
     def __init__(self, config, resolution, transform, split='train', resampling=None):
-        print("resampling: ", resampling)
         assert len(config.roots) == len(config.source) == 1
         assert split in ['train', 'val', 'test', 'all']
         root = Path(config.roots[0]).expanduser()
