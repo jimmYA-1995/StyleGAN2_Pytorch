@@ -197,12 +197,17 @@ class GenericDataset(data.Dataset):
 
 
 class DeepFashionDataset(data.Dataset):
-    def __init__(self, config, resolution, transform=None, split='train'):
+    Gaussian = namedtuple('Gaussian', 'X_mean X_std cx_mean cx_std cy_mean cy_std')
+    Gaussian.__qualname__ = "DeepFashionDataset.Gaussian"
+
+    def __init__(self, config, resolution, transform, split='train', resampling=None):
+        print("resampling: ", resampling)
         assert len(config.roots) == len(config.source) == 1
         assert split in ['train', 'val', 'test', 'all']
         root = Path(config.roots[0]).expanduser()
         src = config.source[0]
         self.config = config
+        self.resampling = resampling
         self.resolution = resolution
         self.transform = transform
         self.mask_trf = transforms.ToTensor()
@@ -224,23 +229,58 @@ class DeepFashionDataset(data.Dataset):
         assert set(self.fileID) <= set(p.stem for p in self.mask_dir.glob('*.png'))
         assert set(self.fileID) <= set(p.stem for p in self.target_dir.glob('*.png'))
 
+        if resampling:
+            assert resampling in ['gt', 'pred']
+            # statistics
+            self.big = DeepFashionDataset.Gaussian(78.08, 11.18, 517.075, 26.655, 131.60, 24.41)
+            self.small = DeepFashionDataset.Gaussian(44.56, 3.32, 517.075, 26.655, 100.36, 17.22)
+            self.rng = np.random.default_rng()
+
+            info_file = root / src / 'real_face_phi.pkl'
+            assert info_file.exists()
+
+            self.info = pickle.load(open(info_file, 'rb'))  # file_stem -> {gt, pred}
+
     def __len__(self):
         return len(self.fileID)
 
     def __getitem__(self, idx):
-        filename = f'{self.fileID[idx]}.png'
+        fileID = self.fileID[idx]
         res = self.resolution
-        face = Image.open(self.face_dir / filename).resize((res, res), Image.ANTIALIAS)
-        mask = Image.open(self.mask_dir / filename).resize((res, res), Image.NEAREST)
-        target = Image.open(self.target_dir / filename)
-        assert face.mode == 'RGB' and mask.mode == 'L' and target.mode == 'RGB'
+        face = Image.open(self.face_dir / f'{fileID}.png').resize((res, res), Image.ANTIALIAS)
+        real_mask = Image.open(self.mask_dir / f'{fileID}.png').resize((res, res), Image.NEAREST)
+        target = Image.open(self.target_dir / f'{fileID}.png').resize((res, res), Image.ANTIALIAS)
+        assert face.mode == 'RGB' and real_mask.mode == 'L' and target.mode == 'RGB'
 
-        if self.transform is not None:
-            face = self.transform(face)
-            target = self.transform(target)
-        mask = self.mask_trf(mask)
+        if self.resampling:
+            phi = self.info[fileID][self.resampling]
+            dist = self.big if np.random.random() < 0.7 else self.small
+            rho = self.rng.normal(loc=dist.X_mean, scale=dist.X_std, size=())
+            cx = self.rng.normal(loc=dist.cx_mean, scale=dist.cx_std, size=())
+            cy = self.rng.normal(loc=dist.cy_mean, scale=dist.cy_std, size=())
+            c = np.hstack([cx, cy])
+            x = np.hstack([rho * np.cos(phi), rho * np.sin(phi)])
+            y = np.flipud(x) * [-1, 1]
+            quad = np.stack([c - x - y, c - x + y, c + x + y, c + x - y]).astype(np.float32)
 
-        return target, face, mask
+            face_np = np.asarray(face.resize((1024, 1024), Image.ANTIALIAS))
+            src = np.array([[0, 0], [0, 1024], [1024, 1024], [1024, 0]], dtype=np.float32)
+
+            M = cv2.getPerspectiveTransform(src, quad)
+            masked_body = cv2.warpPerspective(face_np, M, (1024, 1024), borderMode=cv2.BORDER_CONSTANT, borderValue=(127, 127, 127))
+            fake_mask = Image.fromarray(np.any(masked_body != 127, axis=-1).astype(np.uint8) * 255, mode='L').resize((res, res), Image.NEAREST)
+            masked_body = Image.fromarray(masked_body).resize((res, res), Image.ANTIALIAS)
+            fake_mask = self.mask_trf(fake_mask)
+            masked_body = self.transform(masked_body)
+
+        face = self.transform(face)
+        target = self.transform(target)
+        real_mask = self.mask_trf(real_mask)
+
+        if self.resampling:
+            return target, face, real_mask, masked_body, fake_mask
+
+        return target, face, real_mask
 
 
 class ResamplingDataset(data.Dataset):
@@ -374,7 +414,7 @@ def get_dataset(config, resolution, split='train'):
     ]
     transform = transforms.Compose(trf)
     Dataset = globals().get(config.dataset)
-    dataset = Dataset(config, resolution, transform=transform, split=split)
+    dataset = Dataset(config, resolution, transform=transform, split=split, **config.kwargs)
     return dataset
 
 

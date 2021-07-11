@@ -1,4 +1,5 @@
 # Please refer config.py to default configuration.
+name: 'wandb-exp-name'
 description: >
     Default configuration after add adaptive data augmentation(StyleGAN-ada)
 outdir: 'results'
@@ -10,23 +11,22 @@ DATASET:
   workers: 4
   dataset: DeepFashionDataset
   roots:
-    - '/root/notebooks/data/deepfashion_h_p_r/AB_RGBA_quad'
+    - '~/data/deepfashion'
   source:
-    - ''
+    - 'align_1.2'
   channels:
-    - 4
+    - 3
   mean:
     - 0.5
     - 0.5
     - 0.5
-    - 0.0
   std:
     - 0.5
     - 0.5
     - 0.5
-    - 1.0
-  pin_memory: false
-  # xflip: true
+  kwargs:
+    resampling: pred
+  pin_memory: true
   ADA: false
   ADA_target: 0.6  # set 0 to fix prob.
   ADA_p: 0.0
@@ -69,14 +69,14 @@ TRAIN:
   style_mixing_prob: 0.9
   ckpt: ''
   save_ckpt_every: 6250
-  ckpt_max_keep: 10
+  ckpt_max_keep: -1
   sample_every: 6250
 EVAL:
-  metrics: ''
+  metrics: 'fid'
   FID:
     every: 6250
     batch_size: 8
     n_sample: 50000
-    inception_cache: 'deepfashion-20210506.pkl'
+    inception_cache: ''
     sample_dir: ''
 

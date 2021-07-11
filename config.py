@@ -21,6 +21,7 @@ _C.DATASET.source = ['images']
 _C.DATASET.channels = [3]
 _C.DATASET.mean = [0.5, 0.5, 0.5]
 _C.DATASET.std = [0.5, 0.5, 0.5]
+_C.DATASET.kwargs = CN(new_allowed=True)
 _C.DATASET.pin_memory = False
 _C.DATASET.xflip = True
 _C.DATASET.ADA = False

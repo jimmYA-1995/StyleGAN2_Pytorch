@@ -214,10 +214,13 @@ class Trainer():
         # main loop
         for i in range(self.start_iter, cfg_t.iteration):
             s = time()
-            body_imgs, face_imgs, mask = [x.to(self.device) for x in next(loader)]
+            body_imgs, face_imgs, mask, *args = [x.to(self.device) for x in next(loader)]
             if i % 2 == 0:
                 _body_imgs, face_imgs, mask = [x.to(self.device) for x in next(loader2)]
                 masked_body = torch.cat([_body_imgs * mask, mask], dim=1)
+            elif len(args) == 2:
+                fake_body, mask = args
+                masked_body = torch.cat([fake_body * mask, mask], dim=1)
             else:
                 masked_body = torch.cat([body_imgs * mask, mask], dim=1)
 
@@ -394,7 +397,7 @@ class Trainer():
                 desc = "d: {d:.4f}; g: {g:.4f}; g_rec: {g_rec:.4f}; r1: {r1:.4f}; path: {path:.4f}; mean path: {mean_path:.4f}; ada_p: {ada_p:.2f}"
                 pbar.set_description(desc.format(**reduced_stats))
 
-        if args.local_rank == 0:
+        if self.local_rank == 0:
             pbar.close()
 
             if self.fid_tracker:
@@ -410,7 +413,11 @@ class Trainer():
                     ResamplingDatasetV2(cfg.DATASET, cfg.resolution, split='val')]
         for ds in datasets:
             loader = torch.utils.data.DataLoader(ds, batch_size=self.n_sample // len(datasets), shuffle=False, num_workers=0)
-            body_imgs, face_imgs, mask = [x.to(self.device) for x in next(iter(loader))]
+            body_imgs, face_imgs, mask, *args = [x.to(self.device) for x in next(iter(loader))]
+            if len(args) == 2:
+                # resampling on real dataset
+                body_imgs, mask = args
+
             sample.body_imgs.append(body_imgs)
             sample.face_imgs.append(face_imgs)
             sample.mask.append(mask)
