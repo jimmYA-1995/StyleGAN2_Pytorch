@@ -120,9 +120,9 @@ class DeepFashionDataset(data.Dataset):
         if resampling:
             assert resampling in ['gt', 'pred']
             # statistics
+            self.rng = None
             self.big = DeepFashionDataset.Gaussian(78.08, 11.18, 517.075, 26.655, 131.60, 24.41)
             self.small = DeepFashionDataset.Gaussian(44.56, 3.32, 517.075, 26.655, 100.36, 17.22)
-            self.rng = np.random.default_rng()
 
             info_file = root / src / 'real_face_phi.pkl'
             assert info_file.exists()
@@ -141,6 +141,7 @@ class DeepFashionDataset(data.Dataset):
         assert face.mode == 'RGB' and real_mask.mode == 'L' and target.mode == 'RGB'
 
         if self.resampling:
+            assert self.rng is not None
             phi = self.info[fileID][self.resampling]
             dist = self.big if np.random.random() < 0.7 else self.small
             rho = self.rng.normal(loc=dist.X_mean, scale=dist.X_std, size=())
@@ -240,9 +241,9 @@ class ResamplingDatasetV2(data.Dataset):
         self.mask_trf = transforms.ToTensor()
 
         # statistics
+        self.rng = None
         self.big = ResamplingDatasetV2.Gaussian(78.08, 11.18, 517.075, 26.655, 131.60, 24.41)
         self.small = ResamplingDatasetV2.Gaussian(44.56, 3.32, 517.075, 26.655, 100.36, 17.22)
-        self.rng = np.random.default_rng()
 
         root = Path(config.roots[0]).expanduser() / config.source[0]
         self.fake_dir = root / 'fake_face'
@@ -257,6 +258,7 @@ class ResamplingDatasetV2(data.Dataset):
         return len(self.info)
 
     def __getitem__(self, idx):
+        assert self.rng is not None
         res = self.resolution
         fake_face = Image.open(self.fake_dir / f"{self.info[idx][0]}.png")
         phi = self.info[idx][1]
@@ -283,6 +285,15 @@ class ResamplingDatasetV2(data.Dataset):
         mask = self.mask_trf(mask)
 
         return masked_body, fake_face, mask
+
+
+def worker_init_fn(worker_id):
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    worker_info = torch.utils.data.get_worker_info()
+    dataset = worker_info.dataset
+    if hasattr(dataset, 'rng'):
+        dataset.rng = np.random.default_rng(worker_seed)
 
 
 def data_sampler(dataset, shuffle, distributed):
@@ -317,6 +328,7 @@ def get_dataloader(config, batch_size, n_workers=None, split='train', distribute
         num_workers=n_workers,
         pin_memory=config.DATASET.pin_memory,
         sampler=data_sampler(dataset, shuffle=(split == 'train'), distributed=distributed),
+        worker_init_fn=worker_init_fn,
         drop_last=True,
     )
     return loader
