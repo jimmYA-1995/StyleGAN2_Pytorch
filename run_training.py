@@ -94,10 +94,6 @@ class Trainer():
         if self.local_rank == 0:
             self.log.info("get dataloader ...")
         self.loader = get_dataloader(cfg, self.batch_gpu, distributed=self.ddp)
-        cfg2 = cfg.clone()
-        cfg2.defrost()
-        cfg2.DATASET.dataset = 'ResamplingDatasetV2'
-        self.loader2 = get_dataloader(cfg2, self.batch_gpu, distributed=self.ddp)
 
         # Define model
         label_size = 0 if self.num_classes == 1 else self.num_classes
@@ -207,7 +203,6 @@ class Trainer():
         d_module = self.d.module if self.ddp else self.d
 
         loader = sample_data(self.loader)
-        loader2 = sample_data(self.loader2)
         if self.local_rank == 0:
             pbar = None
 
@@ -215,10 +210,7 @@ class Trainer():
         for i in range(self.start_iter, cfg_t.iteration):
             s = time()
             body_imgs, face_imgs, mask, *args = [x.to(self.device) for x in next(loader)]
-            if i % 2 == 0:
-                _body_imgs, face_imgs, mask = [x.to(self.device) for x in next(loader2)]
-                masked_body = torch.cat([_body_imgs * mask, mask], dim=1)
-            elif len(args) == 2:
+            if i % 2 == 0 and len(args) == 2:
                 fake_body, mask = args
                 masked_body = torch.cat([fake_body * mask, mask], dim=1)
             else:
@@ -409,8 +401,8 @@ class Trainer():
         sample.body_imgs, sample.face_imgs, sample.mask = [], [], []
 
         # ugly. concat val data from real dataset & resampling
-        datasets = [get_dataset(cfg.DATASET, cfg.resolution, split='val'),
-                    ResamplingDatasetV2(cfg.DATASET, cfg.resolution, split='val')]
+        datasets = [get_dataset(cfg.DATASET, cfg.resolution, split='val')]
+
         for ds in datasets:
             loader = torch.utils.data.DataLoader(ds, batch_size=self.n_sample // len(datasets), shuffle=False, num_workers=0)
             body_imgs, face_imgs, mask, *args = [x.to(self.device) for x in next(iter(loader))]

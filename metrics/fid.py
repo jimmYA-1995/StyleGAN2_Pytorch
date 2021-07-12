@@ -192,25 +192,26 @@ class FIDTracker():
     def extract_feature_from_model(self, generator):
         if self.val_dataset is None:
             # self.val_dataset = ResamplingDataset(self.cfg_d, self.resolution)
-            self.val_dataset = ResamplingDatasetV2(self.cfg_d, self.resolution, split='val')
-            # self.val_dataset = get_dataset(self.cfg_d, self.resolution, split='val')
+            # self.val_dataset = ResamplingDatasetV2(self.cfg_d, self.resolution, split='val')
+            self.val_dataset = get_dataset(self.cfg_d, self.resolution, split='val')
             self.log.info(f"validation data samples: {len(self.val_dataset)}")
-            assert self.cfg.n_sample <= len(self.val_dataset)
+            if self.cfg.n_sample > len(self.val_dataset):
+                self.log.warn("required samples is greater than size of validation dataset. This might cause unfair FID result")
 
         sample_means, sample_covs = [], []
         num_sample = self.cfg.n_sample // self.num_gpus
         n_batch = num_sample // self.model_bs
         resid = num_sample % self.model_bs
         num_items = min(len(self.val_dataset), self.cfg.n_sample)
-        item_subset = [(i * self.num_gpus + self.rank) % num_items
-                       for i in range((num_items - 1) // self.num_gpus + 1)]
+        #item_subset = [(i * self.num_gpus + self.rank) % num_items
+        #               for i in range((num_items - 1) // self.num_gpus + 1)]
 
         for class_idx in range(self.num_classes):
             loader = torch.utils.data.DataLoader(self.val_dataset,
                                                  batch_size=self.model_bs,
-                                                 shuffle=False,
-                                                 sampler=item_subset,
-                                                 num_workers=2)
+                                                 shuffle=True,
+                                                 num_workers=2,
+                                                 drop_last=True)
             loader = sample_data(loader)
             features = []
 
@@ -219,8 +220,12 @@ class FIDTracker():
                 if batch == 0:
                     continue
 
-                body_imgs, face_imgs, mask = [x[:batch].to(self.device) for x in next(loader)]
-                masked_body = torch.cat(((body_imgs * mask), mask), dim=1)
+                body_imgs, face_imgs, mask, *args = [x[:batch].to(self.device) for x in next(loader)]
+                if len(args) == 2:
+                    fake_body, mask = args
+                    masked_body = torch.cat([(fake_body * mask), mask], dim=1)
+                else:
+                    masked_body = torch.cat([(body_imgs * mask), mask], dim=1)
                 latent = torch.randn(batch, self.latent_size, device=self.device)
                 fake_label = torch.LongTensor([class_idx] * batch).to(self.device)
 
