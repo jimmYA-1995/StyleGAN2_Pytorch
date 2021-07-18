@@ -20,7 +20,7 @@ import misc
 from torch_utils.ops import conv2d_gradfix, grid_sample_gradfix
 from torch_utils.misc import print_module_summary, constant
 from config import get_cfg_defaults, convert_to_dict
-from dataset import get_dataset, get_dataloader, ResamplingDatasetV2
+from dataset import get_dataset, get_dataloader, ResamplingDatasetV2, worker_init_fn
 from models import Generator, Discriminator
 from augment import AugmentPipe
 from losses import nonsaturating_loss, path_regularize, logistic_loss, d_r1_loss, MaskedRecLoss
@@ -210,9 +210,8 @@ class Trainer():
         for i in range(self.start_iter, cfg_t.iteration):
             s = time()
             body_imgs, face_imgs, mask, *args = [x.to(self.device) for x in next(loader)]
-            if i % 2 == 0 and len(args) == 2:
-                fake_body, mask = args
-                masked_body = torch.cat([fake_body * mask, mask], dim=1)
+            if len(args) == 1 and i % 2 == 0:
+                masked_body = torch.cat([args[0], mask], dim=1)
             else:
                 masked_body = torch.cat([body_imgs * mask, mask], dim=1)
 
@@ -404,7 +403,7 @@ class Trainer():
         datasets = [get_dataset(cfg.DATASET, cfg.resolution, split='val')]
 
         for ds in datasets:
-            loader = torch.utils.data.DataLoader(ds, batch_size=self.n_sample // len(datasets), shuffle=False, num_workers=0)
+            loader = torch.utils.data.DataLoader(ds, batch_size=self.n_sample // len(datasets), shuffle=False, num_workers=0, worker_init_fn=worker_init_fn)
             body_imgs, face_imgs, mask, *args = [x.to(self.device) for x in next(iter(loader))]
             if len(args) == 2:
                 # resampling on real dataset

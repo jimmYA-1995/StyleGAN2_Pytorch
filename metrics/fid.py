@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 from tqdm import trange
 
 import misc
-from dataset import get_dataset, ResamplingDatasetV2
+from dataset import get_dataset, get_dataloader
 from .calc_inception import load_patched_inception_v3
 
 
@@ -191,8 +191,6 @@ class FIDTracker():
     @torch.no_grad()
     def extract_feature_from_model(self, generator):
         if self.val_dataset is None:
-            # self.val_dataset = ResamplingDataset(self.cfg_d, self.resolution)
-            # self.val_dataset = ResamplingDatasetV2(self.cfg_d, self.resolution, split='val')
             self.val_dataset = get_dataset(self.cfg_d, self.resolution, split='val')
             self.log.info(f"validation data samples: {len(self.val_dataset)}")
             if self.cfg.n_sample > len(self.val_dataset):
@@ -202,16 +200,12 @@ class FIDTracker():
         num_sample = self.cfg.n_sample // self.num_gpus
         n_batch = num_sample // self.model_bs
         resid = num_sample % self.model_bs
-        num_items = min(len(self.val_dataset), self.cfg.n_sample)
-        #item_subset = [(i * self.num_gpus + self.rank) % num_items
-        #               for i in range((num_items - 1) // self.num_gpus + 1)]
 
         for class_idx in range(self.num_classes):
             loader = torch.utils.data.DataLoader(self.val_dataset,
                                                  batch_size=self.model_bs,
-                                                 shuffle=True,
-                                                 num_workers=2,
-                                                 drop_last=True)
+                                                 shuffle=False,
+                                                 drop_last=False)
             loader = sample_data(loader)
             features = []
 
@@ -241,7 +235,7 @@ class FIDTracker():
                     feature = torch.stack(_features, dim=1).flatten(0, 1)
                 features.append(feature)
 
-            features = torch.cat(features, 0)[:num_items].cpu().numpy()
+            features = torch.cat(features, 0).cpu().numpy()
             sample_means.append(np.mean(features, 0))
             sample_covs.append(np.cov(features, rowvar=False))
 

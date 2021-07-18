@@ -23,7 +23,7 @@ _C.DATASET.mean = [0.5, 0.5, 0.5]
 _C.DATASET.std = [0.5, 0.5, 0.5]
 _C.DATASET.kwargs = CN(new_allowed=True)
 _C.DATASET.pin_memory = False
-_C.DATASET.xflip = True
+_C.DATASET.xflip = False
 _C.DATASET.ADA = False
 _C.DATASET.ADA_target = 0.6
 _C.DATASET.ADA_p = 0.0
@@ -102,7 +102,13 @@ _C.EVAL.FID.sample_dir = ""
 
 
 def get_cfg_defaults():
-    return _C.clone()
+    """ return local variable use pattern and link some config. together """
+
+    cfg = _C.clone()
+    cfg.DATASET.resolution = cfg.resolution
+    cfg.DATASET.batch_size = cfg.TRAIN.batch_gpu
+
+    return cfg
 
 
 def convert_to_dict(cfg_node, key_list=[]):

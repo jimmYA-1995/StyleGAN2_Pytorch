@@ -26,6 +26,7 @@ DATASET:
     - 0.5
   kwargs:
     resampling: pred
+  xflip: false
   pin_memory: true
   ADA: false
   ADA_target: 0.6  # set 0 to fix prob.
