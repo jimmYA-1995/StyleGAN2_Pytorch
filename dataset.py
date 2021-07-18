@@ -265,24 +265,48 @@ class FakeDeepFashionFace(ResamplingDatasetV2):
 
 
 class ConditionalBatchSampler(data.sampler.BatchSampler):
-    def __init__(self, dataset, class_indices: List[int], sample_per_class: int = 1, no_repeat: bool = False):
+    def __init__(self,
+                 dataset,
+                 class_indices: List[int],
+                 sample_per_class: int = 1,
+                 shuffle: bool = False,
+                 no_repeat: bool = False,
+                 num_gpus: int = 1,
+                 rank: int = 0):
         assert hasattr(dataset, 'num_classes')
         assert hasattr(dataset, 'labels') and isinstance(dataset.labels, (Sequence, np.ndarray))
         assert all(0 <= idx < dataset.num_classes for idx in class_indices)
         if no_repeat:
             assert len(class_indices) == 1, "no_repeat is used for iterate over a specific class once."
 
+        if rank >= num_gpus or rank < 0:
+            raise ValueError(
+                "Invalid rank {}, rank should be in the interval"
+                " [0, {}]".format(rank, num_gpus - 1))
+
+        self.num_gpus = num_gpus
+        self.rank = rank
         self.data_size = len(dataset)
         self.num_classes = dataset.num_classes
         self.class_indices = class_indices
         self.sample_per_class = sample_per_class
-        self.no_repeat = no_repeat
-        self.label_indices = [np.where(np.array(dataset.labels) == c)[0] for c in self.class_indices]
         self.batch_size = len(class_indices) * sample_per_class
+        self.no_repeat = no_repeat
+        self.label_indices = []
+        for c in self.class_indices:
+            label_indices = np.where(np.array(dataset.labels) == c)[0]
+            if len(label_indices) == 0:
+                raise RuntimeError(f"no data for class{c}")
 
-        for i in range(len(class_indices)):
-            if len(self.label_indices[i]) < sample_per_class:
+            if len(label_indices) < sample_per_class:
                 warn(f"total samples of class No.{class_indices[i]} is less than required.")
+
+            if len(label_indices) % num_gpus != 0:
+                # keep each replica have same elements
+                complement = num_gpus - len(label_indices) % num_gpus
+                label_indices = np.concatenate([label_indices, label_indicies[0].repeat(complement)])
+
+            self.label_indices.append(label_indices[rank::num_gpus])
 
     def __iter__(self):
         count = 0
