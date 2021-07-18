@@ -47,16 +47,12 @@ class FIDTracker():
         self.k_iters = []
         self.fids = []
 
-        self.resolution = cfg.resolution
-        self.val_dataset = None  # dataset for model
-        self.latent_size = cfg.MODEL.z_dim
-        self.conditional = True if cfg.num_classes > 1 else False
-        self.num_classes = cfg.num_classes
-        self.model_bs = 8
+        self.val_dataset = None
+        self.num_classes = 1  #
         self.pbar = pbar(rank)
 
         start = time.time()
-        self.log.info("load inception model...")
+        self.log.info("load inceptionV3 model...")
         if num_gpus == 1:
             self.inceptionV3 = load_patched_inception_v3().eval().to(self.device)
         else:
@@ -65,12 +61,12 @@ class FIDTracker():
             self.inceptionV3 = load_patched_inception_v3().eval().to(self.device)
             if self.rank == 0:
                 torch.distributed.barrier()
-        self.log.info("load inception model complete ({:.2f})".format(time.time() - start))
+        self.log.info("load inceptionV3 model complete ({:.2f})".format(time.time() - start))
 
         # get features for real images
-        if cfg.EVAL.FID.inception_cache:
+        if self.cfg.inception_cache:
             self.log.info("load inception from cache file")
-            with open(cfg.EVAL.FID.inception_cache, 'rb') as f:
+            with open(self.cfg.inception_cache, 'rb') as f:
                 embeds = pickle.load(f)
                 self.real_means = embeds['mean']
                 self.real_covs = embeds['cov']
@@ -78,12 +74,12 @@ class FIDTracker():
         else:
             self.real_means, self.real_covs = self.extract_feature_from_images(cfg)
             if self.rank == 0:
-                self.log.info(f"save inception cache in {self.out_dir}")
+                self.log.info(f"save inception cache to {self.out_dir / 'inception_cache.pkl'}")
                 with open(self.out_dir / 'inception_cache.pkl', 'wb') as f:
                     pickle.dump(dict(mean=self.real_means, cov=self.real_covs, idx_to_class=self.idx_to_class), f)
 
     @classmethod
-    def _calc_fid(cls, real_mean, real_cov, sample_mean, sample_cov, eps=1e-6):
+    def calc_fid(cls, real_mean, real_cov, sample_mean, sample_cov, eps=1e-6):
         cov_sqrt, _ = scipy.linalg.sqrtm(sample_cov @ real_cov, disp=False)
 
         if not np.isfinite(cov_sqrt).all():
@@ -106,7 +102,7 @@ class FIDTracker():
         trace = np.trace(sample_cov) + np.trace(real_cov) - 2 * np.trace(cov_sqrt)
         return mean_norm + trace
 
-    def calc_fid(self, candidate, k_iter=0, save=False, eps=1e-6):
+    def __call__(self, candidate, k_iter=0, save=False, eps=1e-6):
         assert self.real_means is not None and self.real_covs is not None
         start = time.time()
         fids = []
@@ -132,6 +128,8 @@ class FIDTracker():
         if self.rank == 0 and save:
             with open(self.out_dir / 'fid.txt', 'a+') as f:
                 f.write(f'{k_iter}: {fids}\n')
+
+            # compatible with NVLab
             result_dict = {"results": {"fid50k_full": fids[0]},
                            "metric": "fid50k_full",
                            "total_time": total_time,
@@ -139,6 +137,7 @@ class FIDTracker():
                            "num_gpus": self.num_gpus,
                            "snapshot_pkl": "none",
                            "timestamp": time.time()}
+
             with open(self.out_dir / 'metric-fid50k_full.jsonl', 'at') as f:
                 f.write(json.dumps(result_dict) + '\n')
 
@@ -152,7 +151,7 @@ class FIDTracker():
             start = time.time()
             self.idx_to_class.append(None)  # no class name now
             # self.log.info(f'extract features from real "{self.idx_to_class[i]}" images...')
-            dataset = get_dataset(cfg.DATASET, cfg.resolution, split='train')
+            dataset = get_dataset(cfg.DATASET, split='train')
             num_items = min(len(dataset), self.cfg.n_sample)
             self.log.info(f"total: {num_items} real images")
 
@@ -191,26 +190,26 @@ class FIDTracker():
     @torch.no_grad()
     def extract_feature_from_model(self, generator):
         if self.val_dataset is None:
-            self.val_dataset = get_dataset(self.cfg_d, self.resolution, split='val')
+            self.val_dataset = get_dataset(self.cfg_d, split='val')
             self.log.info(f"validation data samples: {len(self.val_dataset)}")
             if self.cfg.n_sample > len(self.val_dataset):
                 self.log.warn("required samples is greater than size of validation dataset. This might cause unfair FID result")
 
         sample_means, sample_covs = [], []
         num_sample = self.cfg.n_sample // self.num_gpus
-        n_batch = num_sample // self.model_bs
-        resid = num_sample % self.model_bs
+        n_batch = num_sample // self.cfg.batch_size
+        resid = num_sample % self.cfg.batch_size
 
         for class_idx in range(self.num_classes):
             loader = torch.utils.data.DataLoader(self.val_dataset,
-                                                 batch_size=self.model_bs,
+                                                 batch_size=self.cfg.batch_size,
                                                  shuffle=False,
                                                  drop_last=False)
             loader = sample_data(loader)
             features = []
 
             for i in self.pbar(n_batch + 1):
-                batch = resid if i == n_batch else self.model_bs
+                batch = resid if i == n_batch else self.cfg.batch_size
                 if batch == 0:
                     continue
 
@@ -220,7 +219,7 @@ class FIDTracker():
                     masked_body = torch.cat([(fake_body * mask), mask], dim=1)
                 else:
                     masked_body = torch.cat([(body_imgs * mask), mask], dim=1)
-                latent = torch.randn(batch, self.latent_size, device=self.device)
+                latent = torch.randn(batch, generator.z_dim, device=self.device)
                 fake_label = torch.LongTensor([class_idx] * batch).to(self.device)
 
                 imgs, _ = generator([latent], labels_in=fake_label, style_in=face_imgs, content_in=masked_body, noise_mode='const')
@@ -266,7 +265,7 @@ def subprocess_fn(rank, args, cfg, temp_dir):
     fid_tracker = FIDTracker(cfg, rank, args.num_gpus, args.out_dir)
 
     if args.real:
-        fid_tracker.calc_fid(cfg, save=args.save)
+        fid_tracker(cfg, save=args.save)
         return
 
     if args.ckpt is None:
@@ -300,7 +299,7 @@ def subprocess_fn(rank, args, cfg, temp_dir):
 
         if args.num_gpus > 1:
             torch.distributed.barrier()
-        fid_tracker.calc_fid(g, k_iter=k_iter, save=args.save)
+        fid_tracker(g, k_iter=k_iter, save=args.save)
 
     if rank == 0:
         fid_tracker.plot_fid()

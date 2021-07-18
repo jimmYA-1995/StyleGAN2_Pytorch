@@ -350,7 +350,7 @@ class G_synthesis_stylegan2(nn.Module):
 class G_mapping(nn.Module):
     def __init__(
         self,
-        latent_size,             # Latent vector (Z) dimensionality.
+        z_dim,                   # Latent vector (Z) dimensionality.
         label_size,              # Label dimensionality, 0 if no labels.
         embed_dim=0,
         dlatent_dim=512,         # Disentangled latent (W) dimensionality.
@@ -372,7 +372,7 @@ class G_mapping(nn.Module):
             self.embedding = nn.Embedding(label_size, embed_dim)
 
         fc = []
-        in_dim = (embed_dim + latent_size) if label_size > 0 else latent_size
+        in_dim = (embed_dim + z_dim) if label_size > 0 else z_dim
         for layer_idx in range(num_layer):
             out_dim = dlatent_dim if layer_idx == num_layer - 1 else num_channel
             fc.append(Dense_layer(in_dim, out_dim, lrmul=lrmul))
@@ -404,7 +404,7 @@ class Generator(nn.Module):
     def __init__(
         self,
         z_dim,
-        label_size,
+        num_classes,
         resolution,
         extra_channels=0,
         # mapping_network='G_mapping',
@@ -423,6 +423,7 @@ class Generator(nn.Module):
         **kwargs
     ):
         assert resolution >= 4 and resolution & (resolution - 1) == 0
+        assert isinstance(num_classes, int) and num_classes >= 1
 
         super(Generator, self).__init__()
 
@@ -433,11 +434,14 @@ class Generator(nn.Module):
         #     truncation_psi = truncation_psi_val
         #     truncation_cut_off = truncation_cut_off_val
         #     dlatent_avg_beta = None
+        self.z_dim = z_dim
+        self.num_classes = num_classes
         self.resolution_log2 = int(np.log2(resolution))
         self.num_layers = self.resolution_log2 * 2 - 2
         self.num_channels = 3 + extra_channels
         self.use_style_encoder = use_style_encoder
 
+        label_size = 0 if num_classes == 1 else num_classes
         self.mapping = G_mapping(z_dim, label_size, **map_kwargs)
         dlatent_dim = map_kwargs.dlatent_dim
 
@@ -450,6 +454,7 @@ class Generator(nn.Module):
             dlatent_dim, resolution, img_channels=self.num_channels, architecture='skip', **synthesis_kwargs)
 
     def forward(self, latents_in, labels_in=None, style_in=None, content_in=None, return_latents=None, **synthesis_kwargs):
+        assert not (self.num_classes > 1 ^ labels_in is None)
         with torch.autograd.profiler.record_function("G Mapping"):
             dlatents = self.get_dlatent(latents_in, labels_in=labels_in)
 
@@ -470,7 +475,7 @@ class Generator(nn.Module):
     def get_dlatent(self, latents_in, labels_in=None):
         assert isinstance(latents_in, (tuple, List)), "valid latent dim: [n_noise, B, z_dim]"
         assert len(latents_in) in [1, 2]
-        
+
         if len(latents_in) == 2:
             # style mixing
             pivot = random.randint(1, self.num_layers - 1)
@@ -487,7 +492,7 @@ class Generator(nn.Module):
 class Discriminator(nn.Module):
     def __init__(
         self,
-        label_size,
+        num_classes,
         resolution,
         extra_channels=3,
         fmap_base=16 << 10,
@@ -501,7 +506,9 @@ class Discriminator(nn.Module):
         **kwargs,
     ):
         assert architecture in ['skip', 'resnet'], "unsupported D architecture."
+        assert isinstance(num_classes, int) and num_classes >= 1
         super(Discriminator, self).__init__()
+        self.num_classes = num_classes
         mbstd_num_channels = 1
         self.img_channels = 3 + extra_channels
         self.mbstd_group_size = mbstd_group_size
@@ -523,7 +530,7 @@ class Discriminator(nn.Module):
         # output layer
         self.conv_out = Conv2d_layer(nf(1) + mbstd_num_channels, nf(1))
         self.dense_out = Dense_layer(512 * 4 * 4, nf(0))
-        self.label_out = Dense_layer(nf(0), max(label_size, 1))
+        self.label_out = Dense_layer(nf(0), num_classes)
 
     def forward(self, images_in, labels_in=None):
         assert images_in.shape[1] == self.img_channels, f"(D) channel unmatched. {images_in.shape[1]} v.s. {self.img_channels}"

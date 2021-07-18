@@ -1,10 +1,12 @@
+import random
 import pickle
 from time import time
-from io import BytesIO
+from warnings import warn
 from pathlib import Path
+from typing import List
 from collections import namedtuple
+from collections.abc import Sequence
 
-import lmdb
 import cv2
 import torch
 import numpy as np
@@ -262,7 +264,60 @@ class FakeDeepFashionFace(ResamplingDatasetV2):
         return masked_body, face, mask
 
 
+class ConditionalBatchSampler(data.sampler.BatchSampler):
+    def __init__(self, dataset, class_indices: List[int], sample_per_class: int = 1, no_repeat: bool = False):
+        assert hasattr(dataset, 'num_classes')
+        assert hasattr(dataset, 'labels') and isinstance(dataset.labels, (Sequence, np.ndarray))
+        assert all(0 <= idx < dataset.num_classes for idx in class_indices)
+        if no_repeat:
+            assert len(class_indices) == 1, "no_repeat is used for iterate over a specific class once."
+
+        self.data_size = len(dataset)
+        self.num_classes = dataset.num_classes
+        self.class_indices = class_indices
+        self.sample_per_class = sample_per_class
+        self.no_repeat = no_repeat
+        self.label_indices = [np.where(np.array(dataset.labels) == c)[0] for c in self.class_indices]
+        self.batch_size = len(class_indices) * sample_per_class
+
+        for i in range(len(class_indices)):
+            if len(self.label_indices[i]) < sample_per_class:
+                warn(f"total samples of class No.{class_indices[i]} is less than required.")
+
+    def __iter__(self):
+        self.count = 0
+        self.used_label_indices_count = [0] * len(self.class_indices)
+        while self.count < self.data_size:
+            indices = []
+            for i in range(len(self.class_indices)):
+                cur_idx = self.used_label_indices_count[i]
+                remain = self.sample_per_class
+
+                while remain > 0:
+                    if remain < self.sample_per_class:
+                        np.random.shuffle(self.label_indices[i])
+
+                    end = min(len(self.label_indices[i]), cur_idx + remain)
+                    indices.extend(self.label_indices[i][cur_idx:end])
+                    consumed = end - cur_idx
+                    remain -= consumed
+                    cur_idx = (cur_idx + consumed) % len(self.label_indices[i])
+
+                    if remain > 0 and self.no_repeat:
+                        yield indices
+                        return
+
+                self.used_label_indices_count[i] = cur_idx
+
+            yield indices
+            self.count += len(indices)
+
+    def __len__(self):
+        return self.data_size // self.batch_size
+
+
 def get_dataset(cfg, split='train'):
+    """ Helper function."""
     Dataset = globals().get(cfg.dataset, None)
     if Dataset is None:
         raise ValueError(f"{cfg.dataset} is not defined")

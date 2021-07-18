@@ -96,10 +96,9 @@ class Trainer():
         self.loader = get_dataloader(cfg, self.batch_gpu, distributed=self.ddp)
 
         # Define model
-        label_size = 0 if self.num_classes == 1 else self.num_classes
         self.g = Generator(
             self.z_dim,
-            label_size,
+            cfg.num_classes,
             cfg.resolution,
             extra_channels=cfg.MODEL.extra_channel,
             use_style_encoder=cfg.MODEL.use_style_encoder,
@@ -110,7 +109,7 @@ class Trainer():
         ).to(self.device)
 
         self.d = Discriminator(
-            label_size,
+            cfg.num_classes,
             cfg.resolution,
             extra_channels=cfg.MODEL.extra_channel
         ).to(self.device)
@@ -214,6 +213,7 @@ class Trainer():
                 masked_body = torch.cat([args[0], mask], dim=1)
             else:
                 masked_body = torch.cat([body_imgs * mask, mask], dim=1)
+            fake_label = None
 
             # D.
             requires_grad(self.g, False)
@@ -221,7 +221,6 @@ class Trainer():
 
             with autocast(enabled=self.autocast):
                 noise = mixing_noise(self.batch_gpu, self.z_dim, cfg_t.style_mixing_prob, self.device)
-                fake_label = torch.randint(self.num_classes, (self.batch_gpu,), device=self.device) if self.num_classes > 1 else None
                 fake_img, _ = self.g(noise, labels_in=fake_label, style_in=face_imgs, content_in=masked_body)
 
                 aug_fake_img = self.augment_pipe(fake_img) if cfg_d.ADA else fake_img
@@ -264,7 +263,6 @@ class Trainer():
             # G.
             with autocast(enabled=self.autocast):
                 noise = mixing_noise(self.batch_gpu, self.z_dim, cfg_t.style_mixing_prob, self.device)
-                fake_label = torch.randint(self.num_classes, (self.batch_gpu,), device=self.device) if self.num_classes > 1 else None
                 fake_img, _ = self.g(noise, labels_in=fake_label, style_in=face_imgs, content_in=masked_body)
 
                 aug_fake_img = self.augment_pipe(fake_img) if cfg_d.ADA else fake_img
@@ -287,7 +285,6 @@ class Trainer():
 
                 with autocast(enabled=self.autocast):
                     noise = mixing_noise(path_batch_size, self.z_dim, cfg_t.style_mixing_prob, self.device)
-                    fake_label = torch.randint(self.num_classes, (path_batch_size,), device=self.device) if self.num_classes > 1 else None
 
                     fake_img, latents = self.g(
                         noise, labels_in=fake_label, style_in=face_imgs[:path_batch_size], content_in=masked_body[:path_batch_size], return_latents=True)
@@ -321,7 +318,7 @@ class Trainer():
             if self.fid_tracker is not None and (i == 0 or (i + 1) % self.cfg.EVAL.FID.every == 0):
                 k_iter = (i + 1) / 1000
                 self.g_ema.eval()
-                fids = self.fid_tracker.calc_fid(self.g_ema, k_iter, save=True)
+                fids = self.fid_tracker(self.g_ema, k_iter, save=True)
 
             # reduce loss
             with torch.no_grad():
@@ -419,7 +416,7 @@ class Trainer():
         sample.mask = torch.cat(sample.mask, dim=0)
         sample.masked_body = torch.cat([sample.body_imgs * sample.mask, sample.mask], dim=1)
         sample.z = torch.randn(self.n_sample, self.z_dim, device=self.device)
-        sample.label = torch.randint(self.num_classes, (sample.z.shape[0],), device=self.device) if self.num_classes > 1 else None
+        sample.label = None
         self.log.debug(f"sample vector: {sample.z.shape}")
 
         return sample
