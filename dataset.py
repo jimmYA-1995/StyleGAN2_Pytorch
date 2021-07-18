@@ -285,32 +285,32 @@ class ConditionalBatchSampler(data.sampler.BatchSampler):
                 warn(f"total samples of class No.{class_indices[i]} is less than required.")
 
     def __iter__(self):
-        self.count = 0
-        self.used_label_indices_count = [0] * len(self.class_indices)
-        while self.count < self.data_size:
+        count = 0
+        used_label_indices_count = [0] * len(self.class_indices)
+        while count < self.data_size:
             indices = []
             for i in range(len(self.class_indices)):
-                cur_idx = self.used_label_indices_count[i]
+                label_indices = self.label_indices[i].copy()
+                cur_idx = used_label_indices_count[i]
                 remain = self.sample_per_class
 
                 while remain > 0:
                     if remain < self.sample_per_class:
-                        np.random.shuffle(self.label_indices[i])
+                        np.random.shuffle(label_indices)
 
-                    end = min(len(self.label_indices[i]), cur_idx + remain)
-                    indices.extend(self.label_indices[i][cur_idx:end])
+                    end = min(len(label_indices), cur_idx + remain)
+                    indices.extend(label_indices[cur_idx:end])
                     consumed = end - cur_idx
                     remain -= consumed
-                    cur_idx = (cur_idx + consumed) % len(self.label_indices[i])
-
-                    if remain > 0 and self.no_repeat:
+                    if end == len(label_indices) and self.no_repeat:
                         yield indices
                         return
 
-                self.used_label_indices_count[i] = cur_idx
+                    cur_idx = (cur_idx + consumed) % len(label_indices)
+                used_label_indices_count[i] = cur_idx
 
             yield indices
-            self.count += len(indices)
+            count += len(indices)
 
     def __len__(self):
         return self.data_size // self.batch_size
