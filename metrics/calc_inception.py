@@ -1,18 +1,9 @@
-import argparse
-import pickle
-import os
-
 import torch
-from torch import nn
 from torch.nn import functional as F
-from torch.utils.data import DataLoader
-from torchvision import transforms
 from torchvision.models import inception_v3, Inception3
-import numpy as np
 from tqdm import tqdm
 
 from .inception import InceptionV3
-from dataset import MultiResolutionDataset
 
 
 class Inception3Feature(Inception3):
@@ -71,46 +62,3 @@ def extract_features(loader, inception, device):
     features = torch.cat(feature_list, 0)
 
     return features
-
-
-if __name__ == '__main__':
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-    parser = argparse.ArgumentParser(
-        description='Calculate Inception v3 features for datasets'
-    )
-    parser.add_argument('--size', type=int, default=256)
-    parser.add_argument('--batch', default=64, type=int, help='batch size')
-    parser.add_argument('--n_sample', type=int, default=50000)
-    parser.add_argument('--flip', action='store_true')
-    parser.add_argument('path', metavar='PATH', help='path to datset lmdb file')
-
-    args = parser.parse_args()
-
-    inception = load_patched_inception_v3()
-    inception = nn.DataParallel(inception).eval().to(device)
-
-    transform = transforms.Compose(
-        [
-            transforms.RandomHorizontalFlip(p=0.5 if args.flip else 0),
-            transforms.ToTensor(),
-            transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
-        ]
-    )
-
-    dset = MultiResolutionDataset(args.path, transform=transform, resolution=args.size)
-    loader = DataLoader(dset, batch_size=args.batch, num_workers=4)
-
-    features = extract_features(loader, inception, device).numpy()
-
-    features = features[: args.n_sample]
-
-    print(f'extracted {features.shape[0]} features')
-
-    mean = np.mean(features, 0)
-    cov = np.cov(features, rowvar=False)
-
-    name = os.path.splitext(os.path.basename(args.path))[0]
-
-    with open(f'inception_{name}.pkl', 'wb') as f:
-        pickle.dump({'mean': mean, 'cov': cov, 'size': args.size, 'path': args.path}, f)

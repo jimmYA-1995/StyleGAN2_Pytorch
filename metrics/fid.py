@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import json
 import pickle
@@ -12,14 +13,8 @@ import matplotlib.pyplot as plt
 from tqdm import trange
 
 import misc
-from dataset import get_dataset, ResamplingDatasetV2
+from dataset import get_dataset, get_dataloader, ConditionalBatchSampler
 from .calc_inception import load_patched_inception_v3
-
-
-def sample_data(loader):
-    while True:
-        for batch in loader:
-            yield batch
 
 
 def pbar(rank, force=False):
@@ -36,27 +31,19 @@ class FIDTracker():
         self.num_gpus = num_gpus
         self.device = torch.device('cuda', rank) if num_gpus > 1 else 'cuda'
         self.cfg = cfg.EVAL.FID
-        self.cfg_d = cfg.DATASET
         self.log = logging.getLogger(f'GPU{rank}')
+        self.pbar = pbar(rank)
         self.out_dir = Path(out_dir) if isinstance(out_dir, str) else out_dir
 
         # metrics
         self.real_means = None  # [ndarray(2048) float32] * num_class
         self.real_covs = None  # [ndarray(2048, 2048) float64] * num_class
-        self.idx_to_class = []
+        self.classes = []
         self.k_iters = []
         self.fids = []
 
-        self.resolution = cfg.resolution
-        self.val_dataset = None  # dataset for model
-        self.latent_size = cfg.MODEL.z_dim
-        self.conditional = True if cfg.num_classes > 1 else False
-        self.num_classes = cfg.num_classes
-        self.model_bs = 8
-        self.pbar = pbar(rank)
-
         start = time.time()
-        self.log.info("load inception model...")
+        self.log.info("load inceptionV3 model...")
         if num_gpus == 1:
             self.inceptionV3 = load_patched_inception_v3().eval().to(self.device)
         else:
@@ -65,25 +52,35 @@ class FIDTracker():
             self.inceptionV3 = load_patched_inception_v3().eval().to(self.device)
             if self.rank == 0:
                 torch.distributed.barrier()
-        self.log.info("load inception model complete ({:.2f})".format(time.time() - start))
+        self.log.info("load inceptionV3 model complete ({:.2f} sec)".format(time.time() - start))
 
         # get features for real images
-        if cfg.EVAL.FID.inception_cache:
+        if self.cfg.inception_cache:
             self.log.info("load inception from cache file")
-            with open(cfg.EVAL.FID.inception_cache, 'rb') as f:
+            with open(self.cfg.inception_cache, 'rb') as f:
                 embeds = pickle.load(f)
                 self.real_means = embeds['mean']
                 self.real_covs = embeds['cov']
-                self.idx_to_class = embeds['idx_to_class']
+                self.classes = embeds['classes']
         else:
             self.real_means, self.real_covs = self.extract_feature_from_images(cfg)
             if self.rank == 0:
-                self.log.info(f"save inception cache in {self.out_dir}")
+                self.log.info(f"save inception cache to {self.out_dir / 'inception_cache.pkl'}")
                 with open(self.out_dir / 'inception_cache.pkl', 'wb') as f:
-                    pickle.dump(dict(mean=self.real_means, cov=self.real_covs, idx_to_class=self.idx_to_class), f)
+                    pickle.dump(dict(mean=self.real_means, cov=self.real_covs, classes=self.classes), f)
+
+        cfg_val = cfg
+        if self.cfg.dataset:
+            cfg_val = cfg.clone()
+            cfg_val.defrost()
+            cfg_val.DATASET.dataset = self.cfg.dataset
+            cfg_val.DATASET.kwargs = None
+        self.val_dataset = get_dataset(cfg_val.DATASET, split='train')
+        self.log.info(f"validation dataset: {self.val_dataset.classes}")
+        self.val_dataset.xflip = False
 
     @classmethod
-    def _calc_fid(cls, real_mean, real_cov, sample_mean, sample_cov, eps=1e-6):
+    def calc_fid(cls, real_mean, real_cov, sample_mean, sample_cov, eps=1e-6):
         cov_sqrt, _ = scipy.linalg.sqrtm(sample_cov @ real_cov, disp=False)
 
         if not np.isfinite(cov_sqrt).all():
@@ -106,14 +103,14 @@ class FIDTracker():
         trace = np.trace(sample_cov) + np.trace(real_cov) - 2 * np.trace(cov_sqrt)
         return mean_norm + trace
 
-    def calc_fid(self, candidate, k_iter=0, save=False, eps=1e-6):
+    def __call__(self, candidate, k_iter=0, save=False, eps=1e-6):
         assert self.real_means is not None and self.real_covs is not None
         start = time.time()
         fids = []
 
         # single dispatch
         if isinstance(candidate, torch.nn.Module):
-            self.log.info(f"get FID on {k_iter * 1000} iteration") 
+            self.log.info(f"get FID on {k_iter * 1000} iteration")
             sample_means, sample_covs = self.extract_feature_from_model(candidate)
         else:
             self.log.info(f"get FID on images from {candidate.DATASET.roots[0]}")
@@ -121,17 +118,19 @@ class FIDTracker():
         assert len(sample_means) == len(self.real_means) == len(sample_covs) == len(self.real_covs)
 
         for i, (sample_mean, sample_cov) in enumerate(zip(sample_means, sample_covs)):
-            fid = FIDTracker._calc_fid(self.real_means[i], self.real_covs[i], sample_mean, sample_cov, eps=eps)
+            fid = FIDTracker.calc_fid(self.real_means[i], self.real_covs[i], sample_mean, sample_cov, eps=eps)
             fids.append(fid)
 
         total_time = time.time() - start
-        self.log.info(f'FID on {1000 * k_iter} iterations: "{fids}". [costs {total_time: .2f} sec(s)]')
+        self.log.info(f'FID on {1000 * k_iter: .0f} iterations: "{fids}". [costs {total_time: .2f} sec(s)]')
         self.k_iters.append(k_iter)
         self.fids.append(fids)
 
         if self.rank == 0 and save:
             with open(self.out_dir / 'fid.txt', 'a+') as f:
                 f.write(f'{k_iter}: {fids}\n')
+
+            # compatible with NVLab
             result_dict = {"results": {"fid50k_full": fids[0]},
                            "metric": "fid50k_full",
                            "total_time": total_time,
@@ -139,6 +138,7 @@ class FIDTracker():
                            "num_gpus": self.num_gpus,
                            "snapshot_pkl": "none",
                            "timestamp": time.time()}
+
             with open(self.out_dir / 'metric-fid50k_full.jsonl', 'at') as f:
                 f.write(json.dumps(result_dict) + '\n')
 
@@ -146,28 +146,39 @@ class FIDTracker():
 
     @torch.no_grad()
     def extract_feature_from_images(self, cfg):
-        means, covs = [], []
         image_bs = 8
-        for i in range(self.num_classes):
+        means, covs = [], []
+        dataset = get_dataset(cfg.DATASET, split='all')
+        dataset.xflip = False
+
+        if not self.classes:
+            self.classes = dataset.classes
+        elif self.classes != dataset.classes:
+            self.log.error(f"classes are not matched. {self.classes} v.s {dataset.classes}")
+            sys.exit(1)
+
+        for i, c in enumerate(dataset.classes):
             start = time.time()
-            self.idx_to_class.append(None)  # no class name now
-            # self.log.info(f'extract features from real "{self.idx_to_class[i]}" images...')
-            dataset = get_dataset(cfg.DATASET, cfg.resolution, split='train')
-            num_items = min(len(dataset), self.cfg.n_sample)
-            self.log.info(f"total: {num_items} real images")
+            data_size = len(dataset) if len(dataset.classes) == 1 else dataset.size[c]
+            num_items = min(data_size, self.cfg.n_sample)
+            self.log.info(f'extract features from {num_items} real "{c}" images...')
 
-            item_subset = [(i * self.num_gpus + self.rank) % num_items
-                           for i in range((num_items - 1) // self.num_gpus + 1)]
-            self.log.debug(f"#item subset: {len(item_subset)}")
+            batch_sampler = ConditionalBatchSampler(dataset,
+                                                    class_indices=[i],
+                                                    sample_per_class=image_bs,
+                                                    no_repeat=True,
+                                                    num_gpus=self.num_gpus,
+                                                    rank=self.rank)
 
-            dataloader = torch.utils.data.DataLoader(
-                dataset=dataset, sampler=item_subset, batch_size=image_bs, num_workers=2)
+            dataloader = torch.utils.data.DataLoader(dataset,
+                                                     batch_sampler=batch_sampler,
+                                                     num_workers=dataset.cfg.workers)
 
             features = []
             loader = iter(dataloader)
-            n_batch = len(item_subset) // image_bs + int(len(item_subset) % image_bs != 0)
 
-            for _ in self.pbar(n_batch):
+            # TODO: update progress bar to samples instead of batch
+            for _ in self.pbar(len(batch_sampler)):
                 imgs, *_ = next(loader)
                 imgs = imgs.to(self.device)
                 feature = self.inceptionV3(imgs)[0].view(imgs.shape[0], -1)
@@ -190,41 +201,45 @@ class FIDTracker():
 
     @torch.no_grad()
     def extract_feature_from_model(self, generator):
-        if self.val_dataset is None:
-            # self.val_dataset = ResamplingDataset(self.cfg_d, self.resolution)
-            self.val_dataset = ResamplingDatasetV2(self.cfg_d, self.resolution, split='val')
-            # self.val_dataset = get_dataset(self.cfg_d, self.resolution, split='val')
-            self.log.info(f"validation data samples: {len(self.val_dataset)}")
-            assert self.cfg.n_sample <= len(self.val_dataset)
+        ds = self.val_dataset
+        classes = ds.classes
+        assert len(self.classes) == len(classes)
+        self.log.info("get FID between {}".format(
+            ', '.join(f"{x} v.s {y}" for x, y in zip(self.classes, classes))))
 
         sample_means, sample_covs = [], []
-        num_sample = self.cfg.n_sample // self.num_gpus
-        n_batch = num_sample // self.model_bs
-        resid = num_sample % self.model_bs
-        num_items = min(len(self.val_dataset), self.cfg.n_sample)
-        item_subset = [(i * self.num_gpus + self.rank) % num_items
-                       for i in range((num_items - 1) // self.num_gpus + 1)]
+        items_per_gpu = self.cfg.n_sample // self.num_gpus + int(self.cfg.n_sample % self.num_gpus != 0)
 
-        for class_idx in range(self.num_classes):
-            loader = torch.utils.data.DataLoader(self.val_dataset,
-                                                 batch_size=self.model_bs,
-                                                 shuffle=False,
-                                                 sampler=item_subset,
-                                                 num_workers=2)
-            loader = sample_data(loader)
+        for i, c in enumerate(classes):
+            data_size = len(ds) if len(classes) == 1 else ds.size[c]
+            if data_size < self.cfg.n_sample:
+                self.log.warn(f"#conditional inputs for {c} < required #samples.")
+
+            batch_sampler = ConditionalBatchSampler(ds,
+                                                    class_indices=[i],
+                                                    sample_per_class=self.cfg.batch_size,
+                                                    num_items=items_per_gpu,
+                                                    shuffle=True,
+                                                    num_gpus=self.num_gpus,
+                                                    rank=self.rank)
+
+            dataloader = torch.utils.data.DataLoader(ds,
+                                                     batch_sampler=batch_sampler,
+                                                     num_workers=ds.cfg.workers,
+                                                     worker_init_fn=ds.__class__.worker_init_fn)
+
             features = []
+            loader = iter(dataloader)
+            for i in self.pbar(len(batch_sampler)):
+                body_imgs, face_imgs, mask, *args = [x.to(self.device) for x in next(loader)]
+                if len(args) == 2:
+                    fake_body, mask = args
+                    masked_body = torch.cat([(fake_body * mask), mask], dim=1)
+                else:
+                    masked_body = torch.cat([(body_imgs * mask), mask], dim=1)
+                latent = torch.randn(body_imgs.shape[0], generator.z_dim, device=self.device)
 
-            for i in self.pbar(n_batch + 1):
-                batch = resid if i == n_batch else self.model_bs
-                if batch == 0:
-                    continue
-
-                body_imgs, face_imgs, mask = [x[:batch].to(self.device) for x in next(loader)]
-                masked_body = torch.cat(((body_imgs * mask), mask), dim=1)
-                latent = torch.randn(batch, self.latent_size, device=self.device)
-                fake_label = torch.LongTensor([class_idx] * batch).to(self.device)
-
-                imgs, _ = generator([latent], labels_in=fake_label, style_in=face_imgs, content_in=masked_body, noise_mode='const')
+                imgs, _ = generator([latent], style_in=face_imgs, content_in=masked_body, noise_mode='const')
 
                 feature = self.inceptionV3(imgs[:, :3, :, :])[0].view(imgs.shape[0], -1)
                 if self.num_gpus > 1:
@@ -236,7 +251,7 @@ class FIDTracker():
                     feature = torch.stack(_features, dim=1).flatten(0, 1)
                 features.append(feature)
 
-            features = torch.cat(features, 0)[:num_items].cpu().numpy()
+            features = torch.cat(features, 0)[:self.cfg.n_sample].cpu().numpy()
             sample_means.append(np.mean(features, 0))
             sample_covs.append(np.cov(features, rowvar=False))
 
@@ -250,14 +265,13 @@ class FIDTracker():
         plt.ylabel('FID')
         for fids in self.fids:
             plt.plot(self.k_iters, fids)
-        plt.legend([self.idx_to_class[idx] for idx in range(self.num_classes)], loc='upper right')
+        plt.legend(self.classes, loc='upper right')
         plt.savefig(self.out_dir / 'fid.png')
 
 
 def subprocess_fn(rank, args, cfg, temp_dir):
     from models import Generator
     if args.num_gpus > 1:
-        os.environ['OMP_NUM_THREADS'] = '1'  # for scipy performance issue
         torch.cuda.set_device(rank)
         init_method = f"file://{os.path.join(temp_dir, '.torch_distributed_init')}"
         torch.distributed.init_process_group(backend='nccl', init_method=init_method, rank=rank, world_size=args.num_gpus)
@@ -267,7 +281,7 @@ def subprocess_fn(rank, args, cfg, temp_dir):
     fid_tracker = FIDTracker(cfg, rank, args.num_gpus, args.out_dir)
 
     if args.real:
-        fid_tracker.calc_fid(cfg, save=args.save)
+        fid_tracker(cfg, save=args.save)
         return
 
     if args.ckpt is None:
@@ -278,16 +292,13 @@ def subprocess_fn(rank, args, cfg, temp_dir):
     args.ckpt = Path(args.ckpt)
     args.ckpt = sorted(p for p in args.ckpt.glob('*.pt')) if args.ckpt.is_dir() else [args.ckpt]
     for ckpt in args.ckpt:
-        print(f"calculating fid of {str(ckpt)}")
+        print(f"load {str(ckpt)}")
         k_iter = int(str(ckpt.name)[5:11]) / 1e3
         ckpt = torch.load(ckpt)
 
-        # latent_dim, label_size, resolution
-        assert cfg.num_classes >= 1, f"#classes must greater than 0"
-        label_size = 0 if cfg.num_classes == 1 else cfg.num_classes
         g = Generator(
             cfg.MODEL.z_dim,
-            label_size,
+            cfg.num_classes,
             cfg.resolution,
             extra_channels=cfg.MODEL.extra_channel,
             use_style_encoder=cfg.MODEL.use_style_encoder,
@@ -301,7 +312,7 @@ def subprocess_fn(rank, args, cfg, temp_dir):
 
         if args.num_gpus > 1:
             torch.distributed.barrier()
-        fid_tracker.calc_fid(g, k_iter=k_iter, save=args.save)
+        fid_tracker(g, k_iter=k_iter, save=args.save)
 
     if rank == 0:
         fid_tracker.plot_fid()
@@ -333,4 +344,5 @@ if __name__ == '__main__':
         if args.num_gpus == 1:
             subprocess_fn(rank=0, args=args, cfg=cfg, temp_dir=temp_dir)
         else:
+            os.environ['OMP_NUM_THREADS'] = '1'  # for scipy performance issue
             torch.multiprocessing.spawn(fn=subprocess_fn, args=(args, cfg, temp_dir), nprocs=args.num_gpus)
