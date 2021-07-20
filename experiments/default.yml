@@ -4,6 +4,9 @@ description: >
     Default configuration after add adaptive data augmentation(StyleGAN-ada)
 outdir: 'results'
 n_sample: 64
+sample_ds:
+- DeepFashionDataset
+- FakeDeepFashionFace
 resolution: 256
 num_classes: 1
 
@@ -26,6 +29,7 @@ DATASET:
     - 0.5
   kwargs:
     resampling: pred
+  xflip: false
   pin_memory: true
   ADA: false
   ADA_target: 0.6  # set 0 to fix prob.
@@ -74,6 +78,7 @@ TRAIN:
 EVAL:
   metrics: 'fid'
   FID:
+    dataset: ''
     every: 6250
     batch_size: 8
     n_sample: 50000
