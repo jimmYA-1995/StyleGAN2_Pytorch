@@ -141,8 +141,9 @@ class ResamplingDatasetV2(data.Dataset):
 
 
 class DeepFashionDataset(ResamplingDatasetV2):
-    def __init__(self, cfg, split='train', resampling=None):
+    def __init__(self, cfg, split='train', resampling=None, num_items=None):
         super(DeepFashionDataset, self).__init__(cfg, split=split)
+        self.classes = ["DF_real"]
         self.resampling = resampling
 
         split_map = pickle.load(open(self.root / 'split.pkl', 'rb'))
@@ -151,6 +152,8 @@ class DeepFashionDataset(ResamplingDatasetV2):
         else:
             self.fileIDs = split_map[split]
         self.fileIDs.sort()
+        if num_items:
+            self.fileIDs = self.fileIDs[:min(len(self.fileIDs), num_items)]
 
         src = cfg.source[0]
         self.face_dir = self.root / src / 'face'
@@ -239,11 +242,12 @@ class DeepFashionDataset(ResamplingDatasetV2):
 
 
 class FakeDeepFashionFace(ResamplingDatasetV2):
-    def __init__(self, cfg, split='train'):
+    def __init__(self, cfg, split='train', num_items=None):
         """  Resampling position & angles for fake faces
         """
         assert split in ['train', 'val']
         super(FakeDeepFashionFace, self).__init__(cfg, split=split)
+        self.classes = ["DF_fake"]
 
         self.face_dir = self.root / cfg.source[0] / 'fake_face'
         assert self.face_dir.exists()
@@ -251,6 +255,8 @@ class FakeDeepFashionFace(ResamplingDatasetV2):
         self.info = pickle.load(open(self.root / cfg.source[0] / 'fake_face_phi.pkl', 'rb'))  # file_stem: phi
         fileIDs = sorted(k for k in self.info.keys())
         self.fileIDs = fileIDs[:len(fileIDs) // 2] if split == 'train' else fileIDs[len(fileIDs) // 2:]
+        if num_items:
+            self.fileIDs = self.fileIDs[:min(len(self.fileIDs), num_items)]
         assert set(self.fileIDs) <= set(p.stem for p in self.face_dir.glob('*.png'))
 
     def __getitem__(self, idx):
@@ -265,17 +271,43 @@ class FakeDeepFashionFace(ResamplingDatasetV2):
 
 
 class ConditionalBatchSampler(data.sampler.BatchSampler):
+    """ This sampler is for sampling several classes at same time
+
+        Use case:
+        1. len(class_indices) == 1 and no_repeat is True:
+           It will iterate over a specific class from mutli-class dataset once.
+
+        2. no_repeat is False and num_items is not provided:
+           It will iterate depends on the largest class.
+           other classes will iteratre again to keep the batch size the same.
+
+        3. no_repeat is False and num_items is provided:
+           It will iterate until num_items items.
+    """
     def __init__(self,
                  dataset,
                  class_indices: List[int],
                  sample_per_class: int = 1,
+                 num_items: int = None,
                  shuffle: bool = False,
                  no_repeat: bool = False,
+                 drop_last: bool = False,
                  num_gpus: int = 1,
                  rank: int = 0):
-        assert hasattr(dataset, 'num_classes')
-        assert hasattr(dataset, 'labels') and isinstance(dataset.labels, (Sequence, np.ndarray))
-        assert all(0 <= idx < dataset.num_classes for idx in class_indices)
+        assert hasattr(dataset, 'classes')
+        assert all(0 <= idx < len(dataset.classes) for idx in class_indices)
+        if not hasattr(dataset, 'labels'):
+            if len(dataset.classes) > 1:
+                raise AttributeError("multiclass dataset must have attribute labels")
+            labels = np.zeros((len(dataset),), dtype=int)  # all belongs class0
+        else:
+            assert isinstance(dataset.labels, (Sequence, np.ndarray))
+            labels = np.array(dataset.labels)
+
+        if num_items is not None:
+            assert isinstance(num_items, int) and num_items > 0
+            assert drop_last is False
+
         if no_repeat:
             assert len(class_indices) == 1, "no_repeat is used for iterate over a specific class once."
 
@@ -286,31 +318,42 @@ class ConditionalBatchSampler(data.sampler.BatchSampler):
 
         self.num_gpus = num_gpus
         self.rank = rank
-        self.data_size = len(dataset)
-        self.num_classes = dataset.num_classes
+        self.num_classes = len(dataset.classes)
         self.class_indices = class_indices
         self.sample_per_class = sample_per_class
+        self.num_items = num_items
         self.batch_size = len(class_indices) * sample_per_class
+        self.shuffle = shuffle
         self.no_repeat = no_repeat
+        self.drop_last = drop_last
         self.label_indices = []
-        for c in self.class_indices:
-            label_indices = np.where(np.array(dataset.labels) == c)[0]
+        data_size = 0
+        for c in class_indices:
+            label_indices = np.where(labels == c)[0]
             if len(label_indices) == 0:
                 raise RuntimeError(f"no data for class{c}")
 
             if len(label_indices) < sample_per_class:
-                warn(f"total samples of class No.{class_indices[i]} is less than required.")
+                warn(f"total samples of class No.{c} is less than required.")
 
             if len(label_indices) % num_gpus != 0:
-                # keep each replica have same elements
+                """ keep each replica have same elements to
+                    avoid process hangover during torch.distributed.broadcast
+                """
                 complement = num_gpus - len(label_indices) % num_gpus
-                label_indices = np.concatenate([label_indices, label_indicies[0].repeat(complement)])
+                label_indices = np.resize(label_indices, len(label_indices) + complement)
 
             self.label_indices.append(label_indices[rank::num_gpus])
+            data_size = max(data_size, len(self.label_indices[-1]))
+        self.data_size = data_size if num_items is None else num_items
 
     def __iter__(self):
         count = 0
         used_label_indices_count = [0] * len(self.class_indices)
+        if self.shuffle:
+            for label_indices in self.label_indices:
+                np.random.shuffle(label_indices)
+
         while count < self.data_size:
             indices = []
             for i in range(len(self.class_indices)):
@@ -319,7 +362,7 @@ class ConditionalBatchSampler(data.sampler.BatchSampler):
                 remain = self.sample_per_class
 
                 while remain > 0:
-                    if remain < self.sample_per_class:
+                    if self.shuffle and remain < self.sample_per_class:
                         np.random.shuffle(label_indices)
 
                     end = min(len(label_indices), cur_idx + remain)
@@ -333,22 +376,26 @@ class ConditionalBatchSampler(data.sampler.BatchSampler):
                     cur_idx = (cur_idx + consumed) % len(label_indices)
                 used_label_indices_count[i] = cur_idx
 
-            yield indices
             count += len(indices)
+            if count > self.data_size:
+                if self.drop_last:
+                    return
+                indices = indices[:self.data_size - count]
+            yield indices
 
     def __len__(self):
-        return self.data_size // self.batch_size
+        return self.data_size // self.batch_size + int(self.data_size % self.batch_size != 0)
 
 
-def get_dataset(cfg, split='train'):
+def get_dataset(cfg, split='train', **kwargs):
     """ Helper function."""
     Dataset = globals().get(cfg.dataset, None)
     if Dataset is None:
         raise ValueError(f"{cfg.dataset} is not defined")
 
     if cfg.kwargs is not None:
-        return Dataset(cfg, split=split, **cfg.kwargs)
-    return Dataset(cfg, split=split)
+        return Dataset(cfg, split=split, **cfg.kwargs, **kwargs)
+    return Dataset(cfg, split=split, **kwargs)
 
 
 def get_dataloader(ds, batch_size, distributed=False, **override_kwargs):
@@ -357,7 +404,7 @@ def get_dataloader(ds, batch_size, distributed=False, **override_kwargs):
     """
     assert isinstance(ds, data.Dataset)
     assert isinstance(batch_size, int) and batch_size > 0
-    # dataset = get_dataset(cfg.DATASET, split=split)
+
     loader_kwargs = {}
     loader_kwargs['batch_size'] = batch_size
     loader_kwargs['drop_last'] = True
@@ -375,6 +422,5 @@ def get_dataloader(ds, batch_size, distributed=False, **override_kwargs):
         loader_kwargs['shuffle'] = (ds.split == 'train')
 
     loader_kwargs.update(override_kwargs)
-    print(loader_kwargs)
 
     return data.DataLoader(ds, **loader_kwargs)

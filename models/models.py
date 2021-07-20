@@ -454,7 +454,7 @@ class Generator(nn.Module):
             dlatent_dim, resolution, img_channels=self.num_channels, architecture='skip', **synthesis_kwargs)
 
     def forward(self, latents_in, labels_in=None, style_in=None, content_in=None, return_latents=None, **synthesis_kwargs):
-        assert not (self.num_classes > 1 ^ labels_in is None)
+        assert not ((self.num_classes == 1) ^ (labels_in is None))
         with torch.autograd.profiler.record_function("G Mapping"):
             dlatents = self.get_dlatent(latents_in, labels_in=labels_in)
 

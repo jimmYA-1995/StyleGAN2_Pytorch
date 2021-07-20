@@ -9,6 +9,7 @@ _C.name = ''
 _C.description = ''
 _C.outdir = 'results'
 _C.n_sample = 64
+_C.sample_ds = []
 _C.resolution = 256
 _C.num_classes = 0
 
@@ -94,6 +95,7 @@ _C.ADA.saturation = 1
 _C.EVAL = CN()
 _C.EVAL.metrics = ""
 _C.EVAL.FID = CN()
+_C.EVAL.FID.dataset = ""
 _C.EVAL.FID.every = 0
 _C.EVAL.FID.batch_size = 32
 _C.EVAL.FID.n_sample = 50000

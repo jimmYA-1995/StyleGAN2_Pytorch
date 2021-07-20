@@ -20,7 +20,7 @@ import misc
 from torch_utils.ops import conv2d_gradfix, grid_sample_gradfix
 from torch_utils.misc import print_module_summary, constant
 from config import get_cfg_defaults, convert_to_dict
-from dataset import get_dataset, get_dataloader, ResamplingDatasetV2, worker_init_fn
+from dataset import get_dataset, get_dataloader
 from models import Generator, Discriminator
 from augment import AugmentPipe
 from losses import nonsaturating_loss, path_regularize, logistic_loss, d_r1_loss, MaskedRecLoss
@@ -92,8 +92,16 @@ class Trainer():
 
         # Datset
         if self.local_rank == 0:
-            self.log.info("get dataloader ...")
-        self.loader = get_dataloader(cfg, self.batch_gpu, distributed=self.ddp)
+            self.log.info("Prepare dataloader")
+        self.ds = get_dataset(cfg.DATASET, split='train')
+        self.loader = get_dataloader(self.ds, self.batch_gpu, distributed=self.ddp)
+        cfg2 = cfg.DATASET.clone()
+        cfg2.defrost()
+        cfg2.dataset = 'FakeDeepFashionFace'
+        cfg2.kwargs = None
+        cfg2.freeze()
+        ds = get_dataset(cfg2, split='train')
+        self.loader2 = get_dataloader(ds, self.batch_gpu, distributed=self.ddp)
 
         # Define model
         self.g = Generator(
@@ -202,6 +210,7 @@ class Trainer():
         d_module = self.d.module if self.ddp else self.d
 
         loader = sample_data(self.loader)
+        loader2 = sample_data(self.loader2)
         if self.local_rank == 0:
             pbar = None
 
@@ -209,8 +218,9 @@ class Trainer():
         for i in range(self.start_iter, cfg_t.iteration):
             s = time()
             body_imgs, face_imgs, mask, *args = [x.to(self.device) for x in next(loader)]
-            if len(args) == 1 and i % 2 == 0:
-                masked_body = torch.cat([args[0], mask], dim=1)
+            if i % 2 == 0:
+                masked_body, face_imgs, mask = [x.to(self.device) for x in next(loader2)]
+                masked_body = torch.cat([masked_body, mask], dim=1)
             else:
                 masked_body = torch.cat([body_imgs * mask, mask], dim=1)
             fake_label = None
@@ -396,11 +406,17 @@ class Trainer():
         sample = misc.EasyDict()
         sample.body_imgs, sample.face_imgs, sample.mask = [], [], []
 
-        # ugly. concat val data from real dataset & resampling
-        datasets = [get_dataset(cfg.DATASET, cfg.resolution, split='val')]
+        datasets = []
+        for ds in self.cfg.sample_ds:
+            cfg = self.cfg.DATASET.clone()
+            cfg.defrost()
+            cfg.dataset = ds
+            cfg.xflip = False
+            cfg.freeze()
+            datasets.append(get_dataset(cfg, split='val', num_items=(self.n_sample // len(self.cfg.sample_ds))))
 
         for ds in datasets:
-            loader = torch.utils.data.DataLoader(ds, batch_size=self.n_sample // len(datasets), shuffle=False, num_workers=0, worker_init_fn=worker_init_fn)
+            loader = torch.utils.data.DataLoader(ds, batch_size=len(ds), shuffle=False)
             body_imgs, face_imgs, mask, *args = [x.to(self.device) for x in next(iter(loader))]
             if len(args) == 2:
                 # resampling on real dataset
@@ -409,7 +425,6 @@ class Trainer():
             sample.body_imgs.append(body_imgs)
             sample.face_imgs.append(face_imgs)
             sample.mask.append(mask)
-            del loader
 
         sample.body_imgs = torch.cat(sample.body_imgs, dim=0)
         sample.face_imgs = torch.cat(sample.face_imgs, dim=0)
@@ -447,7 +462,7 @@ class Trainer():
                 self.out_dir / f'samples/fake-{idx}.png',
                 nrow=int(self.n_sample ** 0.5) * 3,
                 normalize=True,
-                range=(-1, 1),
+                value_range=(-1, 1),
             )
 
 
