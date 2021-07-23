@@ -107,6 +107,9 @@ class Trainer():
         cfg_fakeface = override(cfg.DATASET, dict(dataset='FakeDeepFashionFace', kwargs=None), copy=True)
         self.loader2 = get_dataloader(get_dataset(cfg_fakeface, split='train'),
                                       self.batch_gpu, distributed=self.ddp, persistent_workers=True)
+        self.pre_augpipe = AugmentPipe(
+            xflip=0, xint=1, xint_max=0.2, xint_y=False, scale=0, scale_std=0.05).train().requires_grad_(False).to(self.device)
+        self.pre_augpipe.p.copy_(torch.as_tensor(0.5))
 
         # Define model
         self.g = Generator(
@@ -229,7 +232,8 @@ class Trainer():
                 masked_body = torch.cat([masked_body, mask], dim=1)
             else:
                 masked_body = torch.cat([body_imgs * mask, mask], dim=1)
-
+            masked_body = self.pre_augpipe(masked_body)
+            mask = masked_body[:, 3:, :, :]
             body_imgs = torch.cat([body_imgs, real_mask], dim=1)
             aug_body_imgs = self.augment_pipe(body_imgs) if cfg_d.ADA else body_imgs
             fake_label = None

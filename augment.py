@@ -116,7 +116,7 @@ def rotate2d_inv(theta, **kwargs):
 @persistence.persistent_class
 class AugmentPipe(torch.nn.Module):
     def __init__(self,
-        xflip=0, rotate90=0, xint=0, xint_max=0.125,
+        xflip=0, rotate90=0, xint=0, xint_max=0.125, xint_y=True,
         scale=0, rotate=0, aniso=0, xfrac=0, scale_std=0.2, rotate_max=1, aniso_std=0.2, xfrac_std=0.125,
         brightness=0, contrast=0, lumaflip=0, hue=0, saturation=0, brightness_std=0.2, contrast_std=0.5, hue_max=1, saturation_std=1,
         imgfilter=0, imgfilter_bands=[1,1,1,1], imgfilter_std=1,
@@ -130,6 +130,7 @@ class AugmentPipe(torch.nn.Module):
         self.rotate90         = float(rotate90)         # Probability multiplier for 90 degree rotations.
         self.xint             = float(xint)             # Probability multiplier for integer translation.
         self.xint_max         = float(xint_max)         # Range of integer translation, relative to image dimensions.
+        self.xint_y           = xint_y                  # whether to allows translation on y-axis
 
         # General geometric transformations.
         self.scale            = float(scale)            # Probability multiplier for isotropic scaling.
@@ -216,6 +217,8 @@ class AugmentPipe(torch.nn.Module):
         # Apply integer translation with probability (xint * strength).
         if self.xint > 0:
             t = (torch.rand([batch_size, 2], device=device) * 2 - 1) * self.xint_max
+            if not self.xint_y:
+                t[:,1].zero_()
             t = torch.where(torch.rand([batch_size, 1], device=device) < self.xint * self.p, t, torch.zeros_like(t))
             if debug_percentile is not None:
                 t = torch.full_like(t, (debug_percentile * 2 - 1) * self.xint_max)
