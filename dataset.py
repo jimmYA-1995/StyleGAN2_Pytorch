@@ -78,7 +78,7 @@ class ResamplingDatasetV2(data.Dataset):
 
     def img_transform(self, img):
         img = self.maybe_xflip(img)
-        return self._img_transform(img) 
+        return self._img_transform(img)
 
     def mask_transform(self, img):
         img = self.maybe_xflip(img)
@@ -92,7 +92,7 @@ class ResamplingDatasetV2(data.Dataset):
             self.rng = np.random.default_rng()
 
         # get quad coord. (in 1024x1024 context)
-        dist = self.big if np.random.random() < 0.7 else self.small
+        dist = self.big if self.rng.random() < 0.7 else self.small
         rho = self.rng.normal(loc=dist.X_mean, scale=dist.X_std, size=())
         cx = self.rng.normal(loc=dist.cx_mean, scale=dist.cx_std, size=())
         cy = self.rng.normal(loc=dist.cy_mean, scale=dist.cy_std, size=())
