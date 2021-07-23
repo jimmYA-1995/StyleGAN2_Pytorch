@@ -13,7 +13,8 @@ import matplotlib.pyplot as plt
 from tqdm import trange
 
 import misc
-from dataset import get_dataset, get_dataloader, ConditionalBatchSampler
+from config import get_cfg_defaults, override
+from dataset import get_dataset, ConditionalBatchSampler
 from .calc_inception import load_patched_inception_v3
 
 
@@ -69,15 +70,14 @@ class FIDTracker():
                 with open(self.out_dir / 'inception_cache.pkl', 'wb') as f:
                     pickle.dump(dict(mean=self.real_means, cov=self.real_covs, classes=self.classes), f)
 
-        cfg_val = cfg
+        cfg_val = cfg.DATASET.clone()
         if self.cfg.dataset:
-            cfg_val = cfg.clone()
-            cfg_val.defrost()
-            cfg_val.DATASET.dataset = self.cfg.dataset
-            cfg_val.DATASET.kwargs = None
-        self.val_dataset = get_dataset(cfg_val.DATASET, split='train')
+            val_setting = dict(dataset=self.cfg.dataset, xflip=False, pin_memory=False)
+            if self.cfg.dataset != cfg_val.dataset:
+                val_setting['kwargs'] = None
+            override(cfg_val, val_setting)
+        self.val_dataset = get_dataset(cfg_val, split='train')
         self.log.info(f"validation dataset: {self.val_dataset.classes}")
-        self.val_dataset.xflip = False
 
     @classmethod
     def calc_fid(cls, real_mean, real_cov, sample_mean, sample_cov, eps=1e-6):
@@ -321,7 +321,6 @@ def subprocess_fn(rank, args, cfg, temp_dir):
 if __name__ == '__main__':
     import argparse
     import tempfile
-    from config import get_cfg_defaults
 
     parser = argparse.ArgumentParser()
     # parser.add_argument('--truncation', type=float, default=1)

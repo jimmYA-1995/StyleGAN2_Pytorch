@@ -125,3 +125,18 @@ def convert_to_dict(cfg_node, key_list=[]):
         for k, v in cfg_dict.items():
             cfg_dict[k] = convert_to_dict(v, key_list + [k])
         return cfg_dict
+
+
+def override(cfg: CN, item: dict, copy: bool = False) -> CN:
+    "only support 1 level override for simplicity"
+    if copy:
+        cfg = cfg.clone()
+
+    cfg.defrost()
+    for key, override_val in item.items():
+        setattr(cfg, key, override_val)
+    cfg.freeze()
+
+    if copy:
+        return cfg
+    return None

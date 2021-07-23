@@ -19,7 +19,7 @@ from torch.cuda.amp import autocast, GradScaler
 import misc
 from torch_utils.ops import conv2d_gradfix, grid_sample_gradfix
 from torch_utils.misc import print_module_summary, constant
-from config import get_cfg_defaults, convert_to_dict
+from config import get_cfg_defaults, convert_to_dict, override
 from dataset import get_dataset, get_dataloader
 from models import Generator, Discriminator
 from augment import AugmentPipe
@@ -44,10 +44,17 @@ def accumulate(model1, model2, decay=0.999):
         par1[k].data.mul_(decay).add_(par2[k].data, alpha=1 - decay)
 
 
-def sample_data(loader):
+def sample_data(loader, ddp=False):
     while True:
+        epoch = 0
+        if ddp:
+            assert isinstance(loader.sampler, torch.utils.data.distributed.DistributedSampler)
+            loader.sampler.set_epoch(epoch)
+
         for batch in loader:
             yield batch
+
+        epoch += 1
 
 
 def mixing_noise(batch, latent_dim, prob, device):
@@ -74,9 +81,12 @@ class Trainer():
         self.sample = None
         self.autocast = args.autocast
 
-        # general setting
+        # reproducibility
+        random.seed(args.seed * args.num_gpus + args.local_rank)
         np.random.seed(args.seed * args.num_gpus + args.local_rank)
         torch.manual_seed(args.seed * args.num_gpus + args.local_rank)
+
+        # performance setting
         torch.backends.cudnn.benchmark = args.cudnn_benchmark
         # torch.backends.cuda.matmul.allow_tf32 = allow_tf32  # Allow PyTorch to internally use tf32 for matmul
         # torch.backends.cudnn.allow_tf32 = allow_tf32        # Allow PyTorch to internally use tf32 for convolutions
@@ -84,24 +94,19 @@ class Trainer():
             conv2d_gradfix.enabled = True
         else:
             self.log.warn("torch version not later than 1.7. disable conv2d_gradfix.")
-            conv2d_gradfix.enabled = True
+            conv2d_gradfix.enabled = False
         grid_sample_gradfix.enabled = True  # Avoids errors with the augmentation pipe.
 
         self.g_scaler = GradScaler(enabled=args.gradscale)
         self.d_scaler = GradScaler(enabled=args.gradscale)
 
         # Datset
-        if self.local_rank == 0:
-            self.log.info("Prepare dataloader")
-        self.ds = get_dataset(cfg.DATASET, split='train')
-        self.loader = get_dataloader(self.ds, self.batch_gpu, distributed=self.ddp)
-        cfg2 = cfg.DATASET.clone()
-        cfg2.defrost()
-        cfg2.dataset = 'FakeDeepFashionFace'
-        cfg2.kwargs = None
-        cfg2.freeze()
-        ds = get_dataset(cfg2, split='train')
-        self.loader2 = get_dataloader(ds, self.batch_gpu, distributed=self.ddp)
+        self.log.info("Prepare dataloader")
+        self.loader = get_dataloader(get_dataset(cfg.DATASET, split='train'),
+                                     self.batch_gpu, distributed=self.ddp, persistent_workers=True)
+        cfg_fakeface = override(cfg.DATASET, dict(dataset='FakeDeepFashionFace', kwargs=None), copy=True)
+        self.loader2 = get_dataloader(get_dataset(cfg_fakeface, split='train'),
+                                      self.batch_gpu, distributed=self.ddp, persistent_workers=True)
 
         # Define model
         self.g = Generator(
@@ -209,17 +214,17 @@ class Trainer():
         g_module = self.g.module if self.ddp else self.g
         d_module = self.d.module if self.ddp else self.d
 
-        loader = sample_data(self.loader)
-        loader2 = sample_data(self.loader2)
+        loader = sample_data(self.loader, ddp=self.ddp)
+        loader2 = sample_data(self.loader2, ddp=self.ddp)
         if self.local_rank == 0:
             pbar = None
 
         # main loop
         for i in range(self.start_iter, cfg_t.iteration):
             s = time()
-            body_imgs, face_imgs, mask, *args = [x.to(self.device) for x in next(loader)]
+            body_imgs, face_imgs, mask, *args = [x.to(self.device, non_blocking=cfg_d.pin_memory) for x in next(loader)]
             if i % 2 == 0:
-                masked_body, face_imgs, mask = [x.to(self.device) for x in next(loader2)]
+                masked_body, face_imgs, mask = [x.to(self.device, non_blocking=cfg_d.pin_memory) for x in next(loader2)]
                 masked_body = torch.cat([masked_body, mask], dim=1)
             else:
                 masked_body = torch.cat([body_imgs * mask, mask], dim=1)
@@ -402,25 +407,23 @@ class Trainer():
                 self.fid_tracker.plot_fid()
 
     def _get_sample_data(self):
-        cfg = self.cfg
+        cfg_d = self.cfg.DATASET
         sample = misc.EasyDict()
         sample.body_imgs, sample.face_imgs, sample.mask = [], [], []
 
-        datasets = []
-        for ds in self.cfg.sample_ds:
-            cfg = self.cfg.DATASET.clone()
-            cfg.defrost()
-            cfg.dataset = ds
-            cfg.xflip = False
-            cfg.freeze()
-            datasets.append(get_dataset(cfg, split='val', num_items=(self.n_sample // len(self.cfg.sample_ds))))
+        sample_setting = dict(xflip=False, pin_memory=False)
 
-        for ds in datasets:
+        for ds in self.cfg.sample_ds:
+            sample_setting['dataset'] = ds
+            if ds != self.cfg.DATASET.dataset:
+                sample_setting['kwargs'] = None
+            sample_cfg = override(self.cfg.DATASET, sample_setting, copy=True)
+            ds = get_dataset(sample_cfg, split='val', num_items=(self.n_sample // len(self.cfg.sample_ds)))
             loader = torch.utils.data.DataLoader(ds, batch_size=len(ds), shuffle=False)
             body_imgs, face_imgs, mask, *args = [x.to(self.device) for x in next(iter(loader))]
-            if len(args) == 2:
+            if len(args) == 1:
                 # resampling on real dataset
-                body_imgs, mask = args
+                body_imgs = args[0]
 
             sample.body_imgs.append(body_imgs)
             sample.face_imgs.append(face_imgs)
