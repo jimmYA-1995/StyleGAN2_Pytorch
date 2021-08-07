@@ -76,7 +76,7 @@ class FIDTracker():
             if self.cfg.dataset != cfg_val.dataset:
                 val_setting['kwargs'] = None
             override(cfg_val, val_setting)
-        self.val_dataset = get_dataset(cfg_val, split='train')
+        self.val_dataset = get_dataset(cfg_val, split='val')
         self.log.info(f"validation dataset: {self.val_dataset.classes}")
 
     @classmethod
