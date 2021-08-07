@@ -104,7 +104,7 @@ class Trainer():
         self.log.info("Prepare dataloader")
         self.loader = get_dataloader(get_dataset(cfg.DATASET, split='train'),
                                      self.batch_gpu, distributed=self.ddp, persistent_workers=True)
-        cfg_fakeface = override(cfg.DATASET, dict(dataset='FakeDeepFashionFace', kwargs=None), copy=True)
+        cfg_fakeface = override(cfg.DATASET, dict(dataset='UnalignDataset'), copy=True)
         self.loader2 = get_dataloader(get_dataset(cfg_fakeface, split='train'),
                                       self.batch_gpu, distributed=self.ddp, persistent_workers=True)
         self.pre_augpipe = AugmentPipe(
@@ -225,7 +225,7 @@ class Trainer():
         # main loop
         for i in range(self.start_iter, cfg_t.iteration):
             s = time()
-            body_imgs, face_imgs, mask, *args = [x.to(self.device, non_blocking=cfg_d.pin_memory) for x in next(loader)]
+            body_imgs, face_imgs, mask = [x.to(self.device, non_blocking=cfg_d.pin_memory) for x in next(loader)]
             real_mask = mask
             if i % 2 == 0:
                 masked_body, face_imgs, mask = [x.to(self.device, non_blocking=cfg_d.pin_memory) for x in next(loader2)]
@@ -329,7 +329,6 @@ class Trainer():
                 stats['mean_path'] = mean_path_length.detach()
 
             accumulate(self.g_ema, g_module, ema_beta)
-
             # Execute ADA heuristic.
             if cfg_d.ADA and (cfg_d.ADA_target) > 0 and (i % cfg_d.ADA_interval == 0):
                 if self.num_gpus > 1:
@@ -359,6 +358,7 @@ class Trainer():
                 if i == 0 or (i + 1) % cfg_t.sample_every == 0:
                     sample_iter = 'init' if i == 0 else str(i + 1).zfill(digits_length)
                     self.sampling(sample_iter)
+                    print("sample done")
 
                 if (i + 1) % cfg_t.save_ckpt_every == 0:
                     ckpt_iter = str(i + 1).zfill(digits_length)
@@ -530,8 +530,7 @@ if __name__ == '__main__':
                     raise UserError("Fail to parse #iteration from checkpoint filename. Valid format is 'ckpt-<#iter>.pt'")
 
                 if run.starting_step != start_iter:
-                    raise UserError(f"non-increased step in log cal is not allowed in Wandb."
-                                    f"Please unset WANDB_RESUME env variable or set correct checkpoint.")
+                    print(f"non-increased step in log call will cause wandb drop metrics before last #iter in last experiments")
 
             args.wandb_id = run.id
 
