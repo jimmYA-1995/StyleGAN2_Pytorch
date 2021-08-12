@@ -331,7 +331,7 @@ class UnalignDataset(data.Dataset):
         face = self.img_transform(_face)
         # decide mode
         mode = 'bound'
-        for chan in cv2.split(face_np[:20]):
+        for chan in cv2.split(face_np[:5]):
             hist = cv2.calcHist([chan], [0], None, [256], [0, 256])
             if not 120 <= hist.argmax() <= 140:
                 mode = 'others'
@@ -340,8 +340,9 @@ class UnalignDataset(data.Dataset):
         crop = np.array(random.choice(self.info[mode])) // 4  # 1024 -> 256
 
         if mode == 'bound':
+            check_points = range(0, face_np.shape[1], face_np.shape[1] // 5)
             for i in range(face_np.shape[0]):
-                if np.any(face_np[i, 0] < 100) or np.any(face_np[i, 0] > 160):
+                if np.any(face_np[i, check_points] < 100) or np.any(face_np[i, check_points] > 160):
                     break
 
             face_np = face_np[i:, :, :]

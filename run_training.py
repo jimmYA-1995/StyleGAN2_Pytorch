@@ -104,7 +104,7 @@ class Trainer():
         self.log.info("Prepare dataloader")
         self.loader = get_dataloader(get_dataset(cfg.DATASET, split='train'),
                                      self.batch_gpu, distributed=self.ddp, persistent_workers=True)
-        cfg_fakeface = override(cfg.DATASET, dict(dataset='FakeDeepFashionFace', kwargs=None), copy=True)
+        cfg_fakeface = override(cfg.DATASET, dict(dataset='UnalignDataset', kwargs=None), copy=True)
         self.loader2 = get_dataloader(get_dataset(cfg_fakeface, split='train'),
                                       self.batch_gpu, distributed=self.ddp, persistent_workers=True)
 
