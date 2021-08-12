@@ -329,19 +329,21 @@ class UnalignDataset(data.Dataset):
         face_np = np.asarray(_face)
         assert _face.mode == 'RGB'
         face = self.img_transform(_face)
-        if ((face_np[:1, ...] == 128).all(axis=-1).astype(int).sum() / face_np.shape[1]) > 0.5:
-            for i in range(face_np.shape[0]):
-                if not (face_np[i][0] == 128).all():
-                    break
-
-            mode = 'bound'
-        else:
-            mode = 'others'
+        # decide mode
+        mode = 'bound'
+        for chan in cv2.split(face_np[:20]):
+            hist = cv2.calcHist([chan], [0], None, [256], [0, 256])
+            if not 120 <= hist.argmax() <= 140:
+                mode = 'others'
 
         canvas = np.full((256, 256, 3), 128, dtype=np.uint8)
         crop = np.array(random.choice(self.info[mode])) // 4  # 1024 -> 256
 
         if mode == 'bound':
+            for i in range(face_np.shape[0]):
+                if np.any(face_np[i, 0] < 100) or np.any(face_np[i, 0] > 160):
+                    break
+
             face_np = face_np[i:, :, :]
             out_w = crop[2] - crop[0] + 1
             out_h = int(out_w * face_np.shape[0] / face_np.shape[1])
