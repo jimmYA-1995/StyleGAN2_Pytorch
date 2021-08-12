@@ -78,7 +78,7 @@ class ResamplingDatasetV2(data.Dataset):
 
     def img_transform(self, img):
         img = self.maybe_xflip(img)
-        return self._img_transform(img) 
+        return self._img_transform(img)
 
     def mask_transform(self, img):
         img = self.maybe_xflip(img)
@@ -146,7 +146,7 @@ class DeepFashionDataset(ResamplingDatasetV2):
         self.classes = ["DF_real"]
         self.resampling = resampling
 
-        split_map = pickle.load(open(self.root / 'split.pkl', 'rb'))
+        split_map = pickle.load(open(self.root / 'new_split.pkl', 'rb'))
         if split == 'all':
             self.fileIDs = [ID for IDs in split_map.values() for ID in IDs]
         else:
@@ -268,6 +268,102 @@ class FakeDeepFashionFace(ResamplingDatasetV2):
         face = self.img_transform(face)
 
         return masked_body, face, mask
+
+
+class UnalignDataset(data.Dataset):
+    def __init__(self, cfg, split='train', num_items=None):
+        """   """
+        assert len(cfg.roots) == len(cfg.source) == 1
+        assert split in ['train', 'val']
+
+        self.classes = ["DF_fake_unalign"]
+        self.cfg = cfg
+        self.root = Path(cfg.roots[0]).expanduser()
+        self.idx = None
+        self.resolution = cfg.resolution
+        self.split = split
+        self.xflip = cfg.xflip
+        self._img_transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize(cfg.mean, cfg.std, inplace=True),
+        ])
+        self._mask_transform = transforms.ToTensor()
+
+        src = cfg.source[0]
+        self.face_dir = self.root / src / 'fake_face'
+        assert self.face_dir.exists()
+        fileIDs = sorted(p.stem for p in self.face_dir.glob('*.png'))
+        self.fileIDs = fileIDs[:len(fileIDs) // 2] if split == 'train' else fileIDs[len(fileIDs) // 2:]
+        if num_items is not None:
+            assert isinstance(num_items, int)
+            self.fileIDs = self.fileIDs[:min(len(fileIDs), num_items)]
+
+        self.info = pickle.load(open(self.root / src / 'real_crop_coord.pkl', 'rb'))  # face information
+
+    def __len__(self):
+        return len(self.fileIDs) * 2 if self.xflip else len(self.fileIDs)
+
+    def maybe_xflip(self, img):
+        """ xflip if xflip enabled and index > len(ds) / 2,
+            no op. otherwise
+        """
+        assert isinstance(img, Image.Image) and self.idx is not None
+        if not self.xflip or self.idx < len(self.fileIDs):
+            return img
+
+        return img.transpose(method=Image.FLIP_LEFT_RIGHT)
+
+    def img_transform(self, img):
+        img = self.maybe_xflip(img)
+        return self._img_transform(img)
+
+    def mask_transform(self, img):
+        img = self.maybe_xflip(img)
+        return self._mask_transform(img)
+
+    def __getitem__(self, idx):
+        self.idx = idx
+        fileID = self.fileIDs[idx % len(self.fileIDs)] if self.xflip else self.fileIDs[idx]
+
+        _face = Image.open(self.face_dir / f'{fileID}.png')
+        face_np = np.asarray(_face)
+        assert _face.mode == 'RGB'
+        face = self.img_transform(_face)
+        # decide mode
+        mode = 'bound'
+        for chan in cv2.split(face_np[:20]):
+            hist = cv2.calcHist([chan], [0], None, [256], [0, 256])
+            if not 120 <= hist.argmax() <= 140:
+                mode = 'others'
+
+        canvas = np.full((256, 256, 3), 128, dtype=np.uint8)
+        crop = np.array(random.choice(self.info[mode])) // 4  # 1024 -> 256
+
+        if mode == 'bound':
+            for i in range(face_np.shape[0]):
+                if np.any(face_np[i, 0] < 100) or np.any(face_np[i, 0] > 160):
+                    break
+
+            face_np = face_np[i:, :, :]
+            out_w = crop[2] - crop[0] + 1
+            out_h = int(out_w * face_np.shape[0] / face_np.shape[1])
+            face_np = cv2.resize(face_np, (out_w, out_h), interpolation=cv2.INTER_LANCZOS4)
+            canvas[:out_h, crop[0]:crop[0] + out_w] = face_np
+        else:
+            out_h = out_w = crop[2] - crop[0] + 1
+            face_np = cv2.resize(face_np, (out_w, out_h), interpolation=cv2.INTER_LANCZOS4)
+            canvas[crop[1]:crop[1] + out_h, crop[0]:crop[0] + out_w] = face_np
+
+        mask = torch.from_numpy((canvas != 128).any(axis=-1).astype(np.float32)[None, ...])
+        masked_body = self.img_transform(Image.fromarray(canvas))
+
+        return masked_body, face, mask
+
+    @classmethod
+    def worker_init_fn(cls, worker_id):
+        """ For reproducibility & randomness in multi-worker mode """
+        worker_seed = torch.initial_seed() % 2**32
+        np.random.seed(worker_seed)
 
 
 class ConditionalBatchSampler(data.sampler.BatchSampler):
