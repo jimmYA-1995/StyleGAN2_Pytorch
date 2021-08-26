@@ -84,7 +84,7 @@ class ResamplingDatasetV2(data.Dataset):
         img = self.maybe_xflip(img)
         return self._mask_transform(img)
 
-    def resample_face_position(self, face, face_angle):
+    def resample_face_position(self, face, face_angle, c=None):
         if self.rng is None:
             if torch.utils.data.get_worker_info():
                 raise RuntimeError("using worker_init_fn to set RNG when num_wokers > 0")
@@ -94,9 +94,10 @@ class ResamplingDatasetV2(data.Dataset):
         # get quad coord. (in 1024x1024 context)
         dist = self.big if self.rng.random() < 0.7 else self.small
         rho = self.rng.normal(loc=dist.X_mean, scale=dist.X_std, size=())
-        cx = self.rng.normal(loc=dist.cx_mean, scale=dist.cx_std, size=())
-        cy = self.rng.normal(loc=dist.cy_mean, scale=dist.cy_std, size=())
-        c = np.hstack([cx, cy])
+        if c is None:
+            cx = self.rng.normal(loc=dist.cx_mean, scale=dist.cx_std, size=())
+            cy = self.rng.normal(loc=dist.cy_mean, scale=dist.cy_std, size=())
+            c = np.hstack([cx, cy])
         x = np.hstack([rho * np.cos(face_angle), rho * np.sin(face_angle)])
         y = np.flipud(x) * [-1, 1]
         quad = np.stack([c - x - y, c - x + y, c + x + y, c + x - y]).astype(np.float32)
@@ -145,6 +146,8 @@ class DeepFashionDataset(ResamplingDatasetV2):
         super(DeepFashionDataset, self).__init__(cfg, split=split)
         self.classes = ["DF_real"]
         self.resampling = resampling
+        if self.resampling:
+            raise RuntimeError("not support resampling on pose condition")
 
         split_map = pickle.load(open(self.root / 'new_split.pkl', 'rb'))
         if split == 'all':
@@ -158,6 +161,7 @@ class DeepFashionDataset(ResamplingDatasetV2):
         src = cfg.source[0]
         self.face_dir = self.root / src / 'face'
         self.mask_dir = self.root / src / 'mask'
+        self.heatmap_dir = self.root / 'kp_heatmaps/heatmaps'
         self.target_dir = self.root / f'r{self.resolution}' / 'images'
         assert self.face_dir.exists() and self.mask_dir.exists() and self.target_dir.exists()
         assert set(self.fileIDs) <= set(p.stem for p in self.face_dir.glob('*.png'))
@@ -174,71 +178,26 @@ class DeepFashionDataset(ResamplingDatasetV2):
         fileID = self.fileIDs[idx % len(self.fileIDs)] if self.xflip else self.fileIDs[idx]
 
         _face = Image.open(self.face_dir / f'{fileID}.png')
+        heatmaps = pickle.load(open(self.heatmap_dir / f'{fileID}.pkl', 'rb'))[0]
+        if self.xflip and idx < len(self.fileIDs):
+            heatmaps = heatmaps[:, :, ::-1]
+        heatmaps = torch.sigmoid(torch.from_numpy(heatmaps.copy()))
         target = Image.open(self.target_dir / f'{fileID}.png')
         assert _face.mode == 'RGB' and target.mode == 'RGB'
         face = self.img_transform(_face)
         target = self.img_transform(target)
 
         if self.resampling:
-            masked_body, fake_mask = self.resample_face_position(_face, self.info[fileID][self.resampling])
+            p = np.unravel_index(heatmaps[0].argmax(), heatmaps[0].shape)
+            c = np.array([p[1], p[0]]) * 1024 / 56
+            masked_body, fake_mask = self.resample_face_position(_face, self.info[fileID][self.resampling], c=c)
             return target, face, fake_mask, masked_body
 
         real_mask = Image.open(self.mask_dir / f'{fileID}.png')
         assert real_mask.mode == 'L'
         real_mask = self.mask_transform(real_mask)
 
-        return target, face, real_mask
-
-
-# class ResamplingDataset(data.Dataset):
-#     def __init__(self, cfg, resolution):
-#         assert (Path(cfg.roots[0]).parent / 'landmarks_statistics.pkl').exists()
-#         assert (Path(cfg.roots[0]).parent / 'stylegan2-ada-outputs').exists()
-#         trf = [
-#             transforms.ToTensor(),
-#             transforms.Normalize(cfg.mean[:3], cfg.std[:3], inplace=True),
-#         ]
-#         self.transform = transforms.Compose(trf)
-#         self.tgt_size = resolution
-#         statistics = pickle.load(open(Path(cfg.roots[0]).parent / 'landmarks_statistics.pkl', 'rb'))
-#         self.paths = sorted(list((Path(cfg.roots[0]).parent / 'stylegan2-ada-outputs').glob('*.png')))
-
-#         self.ori_size = statistics['resolution']
-#         self.V = statistics['V']
-#         self.mu = statistics['mu']
-#         self.sigma = statistics['sigma']
-#         self.ndim = statistics['V'].shape[1]
-
-#     def __len__(self):
-#         return len(self.paths)
-
-#     def __getitem__(self, idx):
-#         canvas = np.ones((self.ori_size, self.ori_size, 3), dtype=np.uint8) * 127  # gray
-
-#         # resampling
-#         z = np.random.randn(self.ndim, )
-#         resample_latent = z @ self.V.T * self.sigma + self.mu
-#         resample_latent = np.where(resample_latent > 0, resample_latent, 0).astype(int)
-#         x1, y1, x2, y2 = resample_latent[4:8]
-
-#         face_img = Image.open(self.paths[idx])
-#         face_np = np.asarray(face_img.resize((x2 - x1, y2 - y1), Image.ANTIALIAS))
-#         canvas[y1:y2, x1:x2] = face_np
-#         rect = np.array([(x1, y1), (x1, y2), (x2, y2), (x2, y1)], dtype=np.float32)
-#         quad = resample_latent[8:].reshape(4, 2).astype(np.float32)
-#         M = cv2.getPerspectiveTransform(rect, quad)
-#         canvas = cv2.warpPerspective(canvas, M, (self.ori_size, self.ori_size), borderMode=cv2.BORDER_REPLICATE)
-#         mask = (canvas != 127).all(axis=-1).astype(np.float32)
-
-#         face_img = face_img.resize((self.tgt_size, self.tgt_size), Image.ANTIALIAS)
-#         masked_body = Image.fromarray(canvas).resize((self.tgt_size, self.tgt_size), Image.ANTIALIAS)
-#         mask = cv2.resize(mask[..., None], (self.tgt_size, self.tgt_size), interpolation=cv2.INTER_NEAREST)
-#         if self.transform:
-#             face_img = self.transform(face_img)
-#             masked_body = self.transform(masked_body)
-#             mask = transforms.ToTensor()(mask.copy())
-
-#         return masked_body, face_img, mask
+        return target, face, real_mask, heatmaps
 
 
 class FakeDeepFashionFace(ResamplingDatasetV2):
@@ -291,6 +250,7 @@ class UnalignDataset(data.Dataset):
 
         src = cfg.source[0]
         self.face_dir = self.root / src / 'fake_face'
+        self.heatmaps = list((self.root / 'kp_heatmaps/heatmaps').glob('*.pkl'))
         assert self.face_dir.exists()
         fileIDs = sorted(p.stem for p in self.face_dir.glob('*.png'))
         self.fileIDs = fileIDs[:len(fileIDs) // 2] if split == 'train' else fileIDs[len(fileIDs) // 2:]
@@ -329,6 +289,11 @@ class UnalignDataset(data.Dataset):
         face_np = np.asarray(_face)
         assert _face.mode == 'RGB'
         face = self.img_transform(_face)
+        heatmaps = pickle.load(open(random.choice(self.heatmaps), 'rb'))[0]
+        if self.xflip and idx < len(self.fileIDs):
+            heatmaps = heatmaps[:, :, ::-1]
+        heatmaps = torch.sigmoid(torch.from_numpy(heatmaps.copy()))
+
         # decide mode
         mode = 'bound'
         for chan in cv2.split(face_np[:5]):
@@ -338,6 +303,10 @@ class UnalignDataset(data.Dataset):
 
         canvas = np.full((256, 256, 3), 128, dtype=np.uint8)
         crop = np.array(random.choice(self.info[mode])) // 4  # 1024 -> 256
+        out_w = crop[2] - crop[0] + 1
+        cx = np.unravel_index(heatmaps[0].argmax(), heatmaps[0].shape)[1] * 256 / 56
+        crop[0], crop[2] = cx - (out_w / 2), cx + (out_w / 2)
+        crop = np.clip(crop, 0, 255).astype(int)
 
         if mode == 'bound':
             check_points = range(0, face_np.shape[1], face_np.shape[1] // 5)
@@ -358,7 +327,7 @@ class UnalignDataset(data.Dataset):
         mask = torch.from_numpy((canvas != 128).any(axis=-1).astype(np.float32)[None, ...])
         masked_body = self.img_transform(Image.fromarray(canvas))
 
-        return masked_body, face, mask
+        return masked_body, face, mask, heatmaps
 
     @classmethod
     def worker_init_fn(cls, worker_id):

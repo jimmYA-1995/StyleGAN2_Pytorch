@@ -169,8 +169,9 @@ class Trainer():
             z = torch.empty([1, self.batch_gpu, self.z_dim], device=self.device).unbind(0)
             c = torch.randint(self.num_classes, (self.batch_gpu,), device=self.device) if self.num_classes > 1 else None
             face = torch.empty([self.batch_gpu, 3, cfg.resolution, cfg.resolution], device=self.device)
+            heatmaps = torch.empty([self.batch_gpu, 17, 56, 56], device=self.device)
             masked_body = torch.empty([self.batch_gpu, 4, cfg.resolution, cfg.resolution], device=self.device)
-            img, _ = print_module_summary(self.g, [z, c, face, masked_body])
+            img, _ = print_module_summary(self.g, [z, c, face, masked_body, heatmaps])
             print_module_summary(self.d, [img, c])
 
         if self.ddp:
@@ -222,9 +223,9 @@ class Trainer():
         # main loop
         for i in range(self.start_iter, cfg_t.iteration):
             s = time()
-            body_imgs, face_imgs, mask, *args = [x.to(self.device, non_blocking=cfg_d.pin_memory) for x in next(loader)]
-            if i % 2 == 0:
-                masked_body, face_imgs, mask = [x.to(self.device, non_blocking=cfg_d.pin_memory) for x in next(loader2)]
+            body_imgs, face_imgs, mask, heatmaps = [x.to(self.device, non_blocking=cfg_d.pin_memory) for x in next(loader)]
+            if False:  # i % 2 == 0:
+                masked_body, face_imgs, mask, heatmaps = [x.to(self.device, non_blocking=cfg_d.pin_memory) for x in next(loader2)]
                 masked_body = torch.cat([masked_body, mask], dim=1)
             else:
                 masked_body = torch.cat([body_imgs * mask, mask], dim=1)
@@ -236,7 +237,7 @@ class Trainer():
 
             with autocast(enabled=self.autocast):
                 noise = mixing_noise(self.batch_gpu, self.z_dim, cfg_t.style_mixing_prob, self.device)
-                fake_img, _ = self.g(noise, labels_in=fake_label, style_in=face_imgs, content_in=masked_body)
+                fake_img, _ = self.g(noise, labels_in=fake_label, style_in=face_imgs, content_in=masked_body, pose_in=heatmaps)
 
                 aug_fake_img = self.augment_pipe(fake_img) if cfg_d.ADA else fake_img
                 aug_body_imgs = self.augment_pipe(body_imgs) if cfg_d.ADA else body_imgs
@@ -278,7 +279,7 @@ class Trainer():
             # G.
             with autocast(enabled=self.autocast):
                 noise = mixing_noise(self.batch_gpu, self.z_dim, cfg_t.style_mixing_prob, self.device)
-                fake_img, _ = self.g(noise, labels_in=fake_label, style_in=face_imgs, content_in=masked_body)
+                fake_img, _ = self.g(noise, labels_in=fake_label, style_in=face_imgs, content_in=masked_body, pose_in=heatmaps)
 
                 aug_fake_img = self.augment_pipe(fake_img) if cfg_d.ADA else fake_img
                 fake_pred = self.d(aug_fake_img, labels_in=fake_label)
@@ -302,7 +303,7 @@ class Trainer():
                     noise = mixing_noise(path_batch_size, self.z_dim, cfg_t.style_mixing_prob, self.device)
 
                     fake_img, latents = self.g(
-                        noise, labels_in=fake_label, style_in=face_imgs[:path_batch_size], content_in=masked_body[:path_batch_size], return_latents=True)
+                        noise, labels_in=fake_label, style_in=face_imgs[:path_batch_size], content_in=masked_body[:path_batch_size], pose_in=heatmaps[:path_batch_size], return_latents=True)
 
                     path_loss, mean_path_length, path_lengths = path_regularize(fake_img, latents, mean_path_length)
                     weighted_path_loss = cfg_t.path_reg_gain * cfg_t.Greg_every * path_loss
@@ -409,7 +410,7 @@ class Trainer():
     def _get_sample_data(self):
         cfg_d = self.cfg.DATASET
         sample = misc.EasyDict()
-        sample.body_imgs, sample.face_imgs, sample.mask = [], [], []
+        sample.body_imgs, sample.face_imgs, sample.mask, sample.heatmaps = [], [], [], []
 
         sample_setting = dict(xflip=False, pin_memory=False)
 
@@ -420,19 +421,18 @@ class Trainer():
             sample_cfg = override(self.cfg.DATASET, sample_setting, copy=True)
             ds = get_dataset(sample_cfg, split='val', num_items=(self.n_sample // len(self.cfg.sample_ds)))
             loader = torch.utils.data.DataLoader(ds, batch_size=len(ds), shuffle=False)
-            body_imgs, face_imgs, mask, *args = [x.to(self.device) for x in next(iter(loader))]
-            if len(args) == 1:
-                # resampling on real dataset
-                body_imgs = args[0]
+            body_imgs, face_imgs, mask, heatmaps = [x.to(self.device) for x in next(iter(loader))]
 
             sample.body_imgs.append(body_imgs)
             sample.face_imgs.append(face_imgs)
             sample.mask.append(mask)
+            sample.heatmaps.append(heatmaps)
 
         sample.body_imgs = torch.cat(sample.body_imgs, dim=0)
         sample.face_imgs = torch.cat(sample.face_imgs, dim=0)
         sample.mask = torch.cat(sample.mask, dim=0)
         sample.masked_body = torch.cat([sample.body_imgs * sample.mask, sample.mask], dim=1)
+        sample.heatmaps = torch.cat(sample.heatmaps, dim=0)
         sample.z = torch.randn(self.n_sample, self.z_dim, device=self.device)
         sample.label = None
         self.log.debug(f"sample vector: {sample.z.shape}")
@@ -448,7 +448,7 @@ class Trainer():
         with torch.no_grad():
             self.g_ema.eval()
             samples, _ = self.g_ema([self.sample.z], labels_in=self.sample.label, noise_mode='const',
-                                    style_in=self.sample.face_imgs, content_in=self.sample.masked_body)
+                                    style_in=self.sample.face_imgs, content_in=self.sample.masked_body, pose_in=self.sample.heatmaps)
             b, c, h, w = samples.shape
 
             if cfg.dataset == 'MultiChannelDataset':

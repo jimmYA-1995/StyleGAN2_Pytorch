@@ -231,15 +231,15 @@ class FIDTracker():
             features = []
             loader = iter(dataloader)
             for i in self.pbar(len(batch_sampler)):
-                body_imgs, face_imgs, mask, *args = [x.to(self.device) for x in next(loader)]
-                if len(args) == 2:
-                    fake_body, mask = args
-                    masked_body = torch.cat([(fake_body * mask), mask], dim=1)
-                else:
-                    masked_body = torch.cat([(body_imgs * mask), mask], dim=1)
+                body_imgs, face_imgs, mask, heatmaps = [x.to(self.device) for x in next(loader)]
+                # if len(args) == 2:
+                #     fake_body, mask = args
+                #     masked_body = torch.cat([(fake_body * mask), mask], dim=1)
+                # else:
+                masked_body = torch.cat([(body_imgs * mask), mask], dim=1)
                 latent = torch.randn(body_imgs.shape[0], generator.z_dim, device=self.device)
 
-                imgs, _ = generator([latent], style_in=face_imgs, content_in=masked_body, noise_mode='const')
+                imgs, _ = generator([latent], style_in=face_imgs, content_in=masked_body, pose_in=heatmaps, noise_mode='const')
 
                 feature = self.inceptionV3(imgs[:, :3, :, :])[0].view(imgs.shape[0], -1)
                 if self.num_gpus > 1:

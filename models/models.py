@@ -206,6 +206,25 @@ def get_encoder(res_in, res_out, nf_in=3, max_nf=512, dlatent_dim=512):
     return nn.Sequential(*enc)
 
 
+class PoseEncoder(nn.Module):
+    def __init__(self, out_dim):
+        super(PoseEncoder, self).__init__()
+        self.blocks = nn.ModuleList([
+            DBlock(17, 64),
+            DBlock(64, 128),
+            DBlock(128, 256),
+        ])
+        self.conv_down = nn.Conv2d(256, out_dim, 3, 2, 1)
+
+    def forward(self, images_in):
+        skip = None
+        x = images_in
+        for block in self.blocks:
+            x, skip = block(x, skip)
+
+        return self.conv_down(x)
+
+
 class ToRGB(nn.Module):
     def __init__(self, in_channels, out_channels, dlatent_dim, resample_filter=[1, 3, 3, 1]):
         super(ToRGB, self).__init__()
@@ -249,7 +268,7 @@ class DBlock(nn.Module):
 
         self.register_buffer('resample_filter', upfirdn2d.setup_filter(resample_filter))
         self.conv = Conv2d_layer(in_channels, in_channels, resample_filter=resample_filter)
-        self.conv_down = Conv2d_layer(in_channels, out_channels, mode='down', resample_filter=resample_filter)
+        self.conv_down = Conv2d_layer(in_channels, out_channels, mode='down', resample_filter=resample_filter, **kwargs)
 
     def forward(self, latents_in, skip=None):
         if skip is not None:
@@ -301,7 +320,7 @@ class G_synthesis_stylegan2(nn.Module):
 
         # 4x4
         bottom_ch = nf(1) // 2 if use_content_encoder else nf(1)
-        self.input = Parameter(torch.randn([1, bottom_ch, 4, 4]))
+        self.pose_enc = PoseEncoder(bottom_ch)
 
         # main layers
         self.convs = nn.ModuleList()
@@ -319,9 +338,9 @@ class G_synthesis_stylegan2(nn.Module):
 
             in_ch = fmaps
 
-    def forward(self, dlatents_in, content_in=None, **layer_kwargs):
+    def forward(self, dlatents_in, content_in=None, pose_in=None, **layer_kwargs):
         skip = None
-        x = self.input.repeat(dlatents_in.shape[0], 1, 1, 1)
+        x = self.pose_enc(pose_in)
 
         if self.use_content_encoder:
             with torch.autograd.profiler.record_function("Content encoder"):
@@ -453,7 +472,7 @@ class Generator(nn.Module):
         self.synthesis = G_synthesis_stylegan2(
             dlatent_dim, resolution, img_channels=self.num_channels, architecture='skip', **synthesis_kwargs)
 
-    def forward(self, latents_in, labels_in=None, style_in=None, content_in=None, return_latents=None, **synthesis_kwargs):
+    def forward(self, latents_in, labels_in=None, style_in=None, content_in=None, pose_in=None, return_latents=None, **synthesis_kwargs):
         assert not ((self.num_classes == 1) ^ (labels_in is None))
         with torch.autograd.profiler.record_function("G Mapping"):
             dlatents = self.get_dlatent(latents_in, labels_in=labels_in)
@@ -466,7 +485,7 @@ class Generator(nn.Module):
                 dlatents = torch.cat([style_encoding, dlatents], dim=2)
 
         with torch.autograd.profiler.record_function("G synthesis"):
-            images_out = self.synthesis(dlatents, content_in=content_in, **synthesis_kwargs)
+            images_out = self.synthesis(dlatents, content_in=content_in, pose_in=pose_in, **synthesis_kwargs)
 
         if return_latents:
             return images_out, dlatents
