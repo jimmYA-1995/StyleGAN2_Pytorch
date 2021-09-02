@@ -72,7 +72,7 @@ class Trainer():
         self.out_dir = args.out_dir
         self.use_wandb = args.wandb
         self.n_sample = cfg.n_sample
-        self.num_classes = cfg.num_classes
+        self.classes = cfg.classes
         self.z_dim = cfg.MODEL.z_dim
         self.batch_gpu = cfg.TRAIN.batch_gpu
         self.device = torch.device(f'cuda:{args.local_rank}')
@@ -102,38 +102,24 @@ class Trainer():
 
         # Datset
         self.log.info("Prepare dataloader")
-        self.loader = get_dataloader(get_dataset(cfg.DATASET, split='train'),
+        self.loader = get_dataloader(get_dataset(cfg.DATASET, split='all'),
                                      self.batch_gpu, distributed=self.ddp, persistent_workers=True)
-        cfg_fakeface = override(cfg.DATASET, dict(dataset='UnalignDataset', kwargs=None), copy=True)
-        self.loader2 = get_dataloader(get_dataset(cfg_fakeface, split='train'),
-                                      self.batch_gpu, distributed=self.ddp, persistent_workers=True)
 
         # Define model
         self.g = Generator(
-            self.z_dim,
-            cfg.num_classes,
+            cfg.MODEL.z_dim,
+            cfg.MODEL.w_dim,
+            cfg.classes,
             cfg.resolution,
-            extra_channels=cfg.MODEL.extra_channel,
-            use_style_encoder=cfg.MODEL.use_style_encoder,
-            map_kwargs=cfg.MODEL.G_MAP,
-            style_encoder_kwargs=cfg.MODEL.STYLE_ENCODER,
-            synthesis_kwargs=cfg.MODEL.G_SYNTHESIS,
-            # is_training=True
+            mapping_kwargs=cfg.MODEL.MAPPING,
+            synthesis_kwargs=cfg.MODEL.SYNTHESIS,
         ).to(self.device)
 
-        self.d = Discriminator(
-            cfg.num_classes,
-            cfg.resolution,
-            extra_channels=cfg.MODEL.extra_channel
-        ).to(self.device)
-
+        self.d = Discriminator(1, cfg.resolution, img_channels=6).to(self.device)  # fix #class to 1
         self.g_ema = copy.deepcopy(self.g).eval()
 
-        # Define losses
-        self.rec_loss = MaskedRecLoss(mask='gaussian', num_channels=1, device=self.device)
-
         if cfg.DATASET.ADA:
-            self.augment_pipe = AugmentPipe(**convert_to_dict(cfg.ADA)).train().requires_grad_(False).to(self.device)
+            self.augment_pipe = AugmentPipe(**cfg.ADA).train().requires_grad_(False).to(self.device)
             self.augment_pipe.p.copy_(torch.as_tensor(cfg.DATASET.ADA_p))
 
         # Define optimizers
@@ -166,20 +152,19 @@ class Trainer():
 
         # Print network summary tables
         if self.local_rank == 0:
-            z = torch.empty([1, self.batch_gpu, self.z_dim], device=self.device).unbind(0)
-            c = torch.randint(self.num_classes, (self.batch_gpu,), device=self.device) if self.num_classes > 1 else None
-            face = torch.empty([self.batch_gpu, 3, cfg.resolution, cfg.resolution], device=self.device)
-            heatmaps = torch.empty([self.batch_gpu, 17, 56, 56], device=self.device)
-            masked_body = torch.empty([self.batch_gpu, 4, cfg.resolution, cfg.resolution], device=self.device)
-            img, _ = print_module_summary(self.g, [z, c, face, masked_body, heatmaps])
-            print_module_summary(self.d, [img, c])
+            z = torch.empty([self.batch_gpu, self.z_dim], device=self.device)
+            c = None  # torch.randint(self.num_classes, (self.batch_gpu,), device=self.device) if self.num_classes > 1 else None
+            heatmaps = torch.empty([self.batch_gpu, 17, 256, 256], device=self.device)
+            imgs = print_module_summary(self.g, [z, c, heatmaps])
+            print_module_summary(self.d, [imgs, c])
 
         if self.ddp:
             self.g = nn.parallel.DistributedDataParallel(
                 self.g,
                 device_ids=[self.local_rank],
                 output_device=self.local_rank,
-                broadcast_buffers=False
+                broadcast_buffers=False,
+                # find_unused_parameters=True
             )
 
             self.d = nn.parallel.DistributedDataParallel(
@@ -203,7 +188,7 @@ class Trainer():
         digits_length = len(str(cfg_t.iteration))
         ema_beta = 0.5 ** (self.batch_gpu * self.num_gpus / (10 * 1000))
         mean_path_length = 0
-        stats_keys = ['g', 'd', 'g_rec', 'real_score', 'fake_score', 'mean_path', 'r1', 'path', 'path_length']
+        stats_keys = ['g', 'd', 'real_score', 'fake_score', 'mean_path', 'r1', 'path', 'path_length']
         stats = OrderedDict((k, torch.tensor(0.0, dtype=torch.float, device=self.device)) for k in stats_keys)
         fids = None
         ada_p = 0.0
@@ -216,19 +201,14 @@ class Trainer():
         d_module = self.d.module if self.ddp else self.d
 
         loader = sample_data(self.loader, ddp=self.ddp)
-        loader2 = sample_data(self.loader2, ddp=self.ddp)
         if self.local_rank == 0:
             pbar = None
 
         # main loop
         for i in range(self.start_iter, cfg_t.iteration):
             s = time()
-            body_imgs, face_imgs, mask, heatmaps = [x.to(self.device, non_blocking=cfg_d.pin_memory) for x in next(loader)]
-            if False:  # i % 2 == 0:
-                masked_body, face_imgs, mask, heatmaps = [x.to(self.device, non_blocking=cfg_d.pin_memory) for x in next(loader2)]
-                masked_body = torch.cat([masked_body, mask], dim=1)
-            else:
-                masked_body = torch.cat([body_imgs * mask, mask], dim=1)
+            real_face, real_human, heatmaps = [x.to(self.device, non_blocking=cfg_d.pin_memory) for x in next(loader)]
+            real_imgs = torch.cat([real_face, real_human], dim=1)
             fake_label = None
 
             # D.
@@ -236,14 +216,14 @@ class Trainer():
             requires_grad(self.d, True)
 
             with autocast(enabled=self.autocast):
-                noise = mixing_noise(self.batch_gpu, self.z_dim, cfg_t.style_mixing_prob, self.device)
-                fake_img, _ = self.g(noise, labels_in=fake_label, style_in=face_imgs, content_in=masked_body, pose_in=heatmaps)
+                z = torch.randn(self.batch_gpu, self.z_dim, device=self.device)
+                fake_imgs = self.g(z, c=fake_label, pose=heatmaps)
 
-                aug_fake_img = self.augment_pipe(fake_img) if cfg_d.ADA else fake_img
-                aug_body_imgs = self.augment_pipe(body_imgs) if cfg_d.ADA else body_imgs
+                aug_fake_imgs = self.augment_pipe(fake_imgs) if cfg_d.ADA else fake_imgs
+                aug_real_imgs = self.augment_pipe(real_imgs) if cfg_d.ADA else real_imgs
 
-                fake_pred = self.d(aug_fake_img, labels_in=fake_label)
-                real_pred = self.d(aug_body_imgs, labels_in=fake_label)
+                fake_pred = self.d(aug_fake_imgs, labels_in=fake_label)
+                real_pred = self.d(aug_real_imgs, labels_in=fake_label)
 
                 if cfg_d.ADA and (cfg_d.ADA_target) > 0:
                     ada_moments[0].add_(torch.ones_like(real_pred).sum())
@@ -262,10 +242,10 @@ class Trainer():
 
             if i % cfg_t.Dreg_every == 0:
                 self.d.zero_grad(set_to_none=True)
-                aug_body_imgs.requires_grad = True
+                aug_real_imgs.requires_grad = True
                 with autocast(enabled=self.autocast):
-                    real_pred = self.d(aug_body_imgs)
-                    r1_loss = d_r1_loss(real_pred, aug_body_imgs)
+                    real_pred = self.d(aug_real_imgs)
+                    r1_loss = d_r1_loss(real_pred, aug_real_imgs)
                     Dreg_loss = cfg_t.r1 / 2 * r1_loss * cfg_t.Dreg_every + 0 * real_pred[0]
 
                 self.d_scaler.scale(Dreg_loss).backward()
@@ -278,16 +258,14 @@ class Trainer():
 
             # G.
             with autocast(enabled=self.autocast):
-                noise = mixing_noise(self.batch_gpu, self.z_dim, cfg_t.style_mixing_prob, self.device)
-                fake_img, _ = self.g(noise, labels_in=fake_label, style_in=face_imgs, content_in=masked_body, pose_in=heatmaps)
+                z = torch.randn(self.batch_gpu, self.z_dim, device=self.device)
+                fake_imgs = self.g(z, c=fake_label, pose=heatmaps)
 
-                aug_fake_img = self.augment_pipe(fake_img) if cfg_d.ADA else fake_img
-                fake_pred = self.d(aug_fake_img, labels_in=fake_label)
+                aug_fake_imgs = self.augment_pipe(fake_imgs) if cfg_d.ADA else fake_imgs
+                fake_pred = self.d(aug_fake_imgs, labels_in=fake_label)
                 g_adv_loss = nonsaturating_loss(fake_pred)
-                g_rec_loss = self.rec_loss(masked_body[:, :3, :, :], fake_img, mask=mask)  #
-                g_loss = g_adv_loss + g_rec_loss
+                g_loss = g_adv_loss
                 stats['g'] = g_adv_loss.detach()
-                stats['g_rec'] = g_rec_loss.detach()
 
             self.g.zero_grad(set_to_none=True)
             self.g_scaler.scale(g_loss).backward()
@@ -300,16 +278,16 @@ class Trainer():
                 path_batch_size = max(1, self.batch_gpu // cfg_t.path_bs_shrink)
 
                 with autocast(enabled=self.autocast):
-                    noise = mixing_noise(path_batch_size, self.z_dim, cfg_t.style_mixing_prob, self.device)
+                    z = mixing_noise(path_batch_size, self.z_dim, cfg_t.style_mixing_prob, self.device)[0]
+                    fake_imgs, ws = self.g(z, c=fake_label, pose=heatmaps[:path_batch_size], return_dlatent=True)
 
-                    fake_img, latents = self.g(
-                        noise, labels_in=fake_label, style_in=face_imgs[:path_batch_size], content_in=masked_body[:path_batch_size], pose_in=heatmaps[:path_batch_size], return_latents=True)
-
-                    path_loss, mean_path_length, path_lengths = path_regularize(fake_img, latents, mean_path_length)
+                    fake_face, _ = torch.split(fake_imgs, [3, 3], dim=1)
+                    # PPL regularization only on face
+                    path_loss, mean_path_length, path_lengths = path_regularize(fake_face, ws[0], mean_path_length)
                     weighted_path_loss = cfg_t.path_reg_gain * cfg_t.Greg_every * path_loss
 
                     if cfg_t.path_bs_shrink:
-                        weighted_path_loss += 0 * fake_img[0, 0, 0, 0]
+                        weighted_path_loss += 0 * fake_face[0, 0, 0, 0]
 
                 self.g_scaler.scale(weighted_path_loss).backward()
                 self.g_scaler.step(self.g_optim)
@@ -343,8 +321,7 @@ class Trainer():
                     torch.distributed.reduce_multigpu(losses, dst=0)
 
             if self.local_rank == 0:
-                reduced_stats = {k: (v / self.num_gpus).item()
-                                 for k, v in zip(stats.keys(), losses[0])}
+                reduced_stats = {k: (v / self.num_gpus).item() for k, v in zip(stats.keys(), losses[0])}
                 reduced_stats['ada_p'] = ada_p
 
                 if i == 0 or (i + 1) % cfg_t.sample_every == 0:
@@ -374,12 +351,11 @@ class Trainer():
                     wandb_stats = {
                         'training time': time() - s,
                         'Generator': reduced_stats['g'],
-                        'G-reconstruction': reduced_stats['g_rec'],
                         'Discriminator': reduced_stats['d'],
                         'R1': reduced_stats['r1'],
-                        'Path Length Regularization': reduced_stats['path'],
-                        'Path Length': reduced_stats['path_length'],
-                        'Mean Path Length': reduced_stats['mean_path'],
+                        'Path Length Regularization(face)': reduced_stats['path'],
+                        'Path Length(face)': reduced_stats['path_length'],
+                        'Mean Path Length(face)': reduced_stats['mean_path'],
                         'Real Score': reduced_stats['real_score'],
                         'Fake Score': reduced_stats['fake_score'],
                         'ADA probability': reduced_stats['ada_p'],
@@ -398,7 +374,7 @@ class Trainer():
                     pbar = tqdm(total=cfg_t.iteration, initial=i, dynamic_ncols=True, smoothing=0, colour='yellow')
 
                 pbar.update(1)
-                desc = "d: {d:.4f}; g: {g:.4f}; g_rec: {g_rec:.4f}; r1: {r1:.4f}; path: {path:.4f}; mean path: {mean_path:.4f}; ada_p: {ada_p:.2f}"
+                desc = "d: {d:.4f}; g: {g:.4f}; r1: {r1:.4f}; path: {path:.4f}; mean path: {mean_path:.4f}; ada_p: {ada_p:.2f}"
                 pbar.set_description(desc.format(**reduced_stats))
 
         if self.local_rank == 0:
@@ -408,31 +384,13 @@ class Trainer():
                 self.fid_tracker.plot_fid()
 
     def _get_sample_data(self):
-        cfg_d = self.cfg.DATASET
+        sample_cfg = self.cfg.DATASET.clone()
+        override(sample_cfg.kwargs, dict(sample=True))
+        sample_ds = get_dataset(sample_cfg, split='all')
         sample = misc.EasyDict()
-        sample.body_imgs, sample.face_imgs, sample.mask, sample.heatmaps = [], [], [], []
-
-        sample_setting = dict(xflip=False, pin_memory=False)
-
-        for ds in self.cfg.sample_ds:
-            sample_setting['dataset'] = ds
-            if ds != self.cfg.DATASET.dataset:
-                sample_setting['kwargs'] = None
-            sample_cfg = override(self.cfg.DATASET, sample_setting, copy=True)
-            ds = get_dataset(sample_cfg, split='val', num_items=(self.n_sample // len(self.cfg.sample_ds)))
-            loader = torch.utils.data.DataLoader(ds, batch_size=len(ds), shuffle=False)
-            body_imgs, face_imgs, mask, heatmaps = [x.to(self.device) for x in next(iter(loader))]
-
-            sample.body_imgs.append(body_imgs)
-            sample.face_imgs.append(face_imgs)
-            sample.mask.append(mask)
-            sample.heatmaps.append(heatmaps)
-
-        sample.body_imgs = torch.cat(sample.body_imgs, dim=0)
-        sample.face_imgs = torch.cat(sample.face_imgs, dim=0)
-        sample.mask = torch.cat(sample.mask, dim=0)
-        sample.masked_body = torch.cat([sample.body_imgs * sample.mask, sample.mask], dim=1)
-        sample.heatmaps = torch.cat(sample.heatmaps, dim=0)
+        
+        loader = torch.utils.data.DataLoader(sample_ds, batch_size=self.n_sample, shuffle=False)
+        sample.vis_kp, sample.heatmaps = [x.to(self.device) for x in next(iter(loader))]
         sample.z = torch.randn(self.n_sample, self.z_dim, device=self.device)
         sample.label = None
         self.log.debug(f"sample vector: {sample.z.shape}")
@@ -444,26 +402,18 @@ class Trainer():
         if self.sample is None:
             self.sample = self._get_sample_data()
 
-        cfg = self.cfg.DATASET
         with torch.no_grad():
             self.g_ema.eval()
-            samples, _ = self.g_ema([self.sample.z], labels_in=self.sample.label, noise_mode='const',
-                                    style_in=self.sample.face_imgs, content_in=self.sample.masked_body, pose_in=self.sample.heatmaps)
-            b, c, h, w = samples.shape
+            samples = self.g_ema(self.sample.z, c=self.sample.label, pose=self.sample.heatmaps, noise_mode='const')
 
-            if cfg.dataset == 'MultiChannelDataset':
-                assert c == sum(cfg.channels)
-                samples = torch.split(samples, cfg.channels, dim=1)
-                samples = [(x.repeat(1, 3, 1, 1) if x.shape[1] == 1 else x)for x in samples]
-                samples = torch.cat(samples, dim=2)
-            else:
-                samples = torch.stack([self.sample.face_imgs, self.sample.body_imgs, samples], dim=0)
-                samples = torch.transpose(samples, 0, 1).reshape(3 * b, c, h, w)
+            s = torch.split(samples, [3, 3], dim=1) + (self.sample.vis_kp,)
+            samples = torch.stack(s, dim=0)  # add visualize pose
+            samples = torch.transpose(samples, 0, 1).reshape(len(s) * self.n_sample, *s[0].shape[1:])
 
             utils.save_image(
                 samples,
                 self.out_dir / f'samples/fake-{idx}.png',
-                nrow=int(self.n_sample ** 0.5) * 3,
+                nrow=int(self.n_sample ** 0.5) * len(s),
                 normalize=True,
                 value_range=(-1, 1),
             )

@@ -1,11 +1,23 @@
 import os
 import logging
+import numpy as np
 from pathlib import Path
 from typing import Any
+from skimage.draw import circle, line_aa
+
+
+LIMB_SEQ = [[0,1], [0,2], [1,3], [2,4], [5,6], [5,7], [6,8], [7,9], [8,10], [5,11],
+            [6,12], [11,13], [12,14], [13,15], [14,16]]
+
+COLORS = [[255, 0, 0], [255, 85, 0], [255, 170, 0], [255, 255, 0], [170, 255, 0], [85, 255, 0], [0, 255, 0],
+          [0, 255, 85], [0, 255, 170], [0, 255, 255], [0, 170, 255], [0, 85, 255], [0, 0, 255], [85, 0, 255],
+          [170, 0, 255], [255, 0, 255], [255, 0, 170], [255, 0, 85]]
+MISSING_VALUE = -1
 
 
 class UserError(Exception):
     pass
+
 
 class EasyDict(dict):
     """Convenience class that behaves like a dict but allows access with the attribute syntax."""
@@ -103,3 +115,51 @@ def prepare_training(args, cfg):
 
     (args.out_dir / 'checkpoints').mkdir(parents=True)
     (args.out_dir / 'samples').mkdir(parents=True)
+
+
+# https://github.com/RenYurui/Global-Flow-Local-Attention/blob/3afa8fe9e0c1ed148eff6720a1345c4a428ec76b/util/pose_utils.py#L52
+def cords_to_map(cords, img_size, old_size=None, affine_matrix=None, sigma=6):
+    old_size = img_size if old_size is None else old_size
+    cords = cords.astype(float)
+    result = np.zeros(img_size + cords.shape[0:1], dtype='float32')
+    for i, point in enumerate(cords):
+        if point[0] == MISSING_VALUE or point[1] == MISSING_VALUE:
+            continue
+        point[0] = point[0] / old_size[0] * img_size[0]
+        point[1] = point[1] / old_size[1] * img_size[1]
+        if affine_matrix is not None:
+            point_ = np.dot(affine_matrix, np.matrix([point[1], point[0], 1]).reshape(3, 1))
+            point_0 = int(point_[1])
+            point_1 = int(point_[0])
+        else:
+            point_0 = int(point[0])
+            point_1 = int(point[1])
+        xx, yy = np.meshgrid(np.arange(img_size[1]), np.arange(img_size[0]))
+        result[..., i] = np.exp(-((yy - point_0) ** 2 + (xx - point_1) ** 2) / (2 * sigma ** 2))
+    return result
+
+
+def draw_pose_from_cords(pose_joints, img_size, radius=2, draw_joints=True):
+    colors = np.zeros(shape=img_size + (3, ), dtype=np.uint8)
+    mask = np.zeros(shape=img_size, dtype=bool)
+
+    if draw_joints:
+        for f, t in LIMB_SEQ:
+            from_missing = pose_joints[f][0] == MISSING_VALUE or pose_joints[f][1] == MISSING_VALUE
+            to_missing = pose_joints[t][0] == MISSING_VALUE or pose_joints[t][1] == MISSING_VALUE
+            if from_missing or to_missing:
+                continue
+            yy, xx, val = line_aa(pose_joints[f][0], pose_joints[f][1], pose_joints[t][0], pose_joints[t][1])
+            colors[yy, xx] = np.expand_dims(val, 1) * 255
+            mask[yy, xx] = True
+
+    for i, joint in enumerate(pose_joints):
+        if pose_joints[i][0] == MISSING_VALUE or pose_joints[i][1] == MISSING_VALUE:
+            continue
+        yy, xx = circle(joint[0], joint[1], radius=radius, shape=img_size)
+        colors[yy, xx] = COLORS[i]
+        mask[yy, xx] = True
+
+    return colors, mask
+
+    

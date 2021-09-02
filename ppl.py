@@ -103,7 +103,7 @@ if __name__ == '__main__':
             lerp_t = torch.rand(batch, device=device)
 
             # if args.space == 'w':
-            latent = g.get_dlatent([inputs], sk=cond_samples)
+            latent = g.get_dlatents([inputs], sk=cond_samples)
             n_broadcast = latent.shape[1]
             latent =  latent[:,0,:]
             latent_t0, latent_t1 = latent[::2], latent[1::2]

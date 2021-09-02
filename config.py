@@ -9,9 +9,8 @@ _C.name = ''
 _C.description = ''
 _C.outdir = 'results'
 _C.n_sample = 64
-_C.sample_ds = []
 _C.resolution = 256
-_C.num_classes = 0
+_C.classes = []
 
 # ------ dataset ------
 _C.DATASET = CN()
@@ -23,6 +22,7 @@ _C.DATASET.channels = [3]
 _C.DATASET.mean = [0.5, 0.5, 0.5]
 _C.DATASET.std = [0.5, 0.5, 0.5]
 _C.DATASET.kwargs = CN(new_allowed=True)
+_C.DATASET.kwargs.pose_on = False
 _C.DATASET.pin_memory = False
 _C.DATASET.xflip = False
 _C.DATASET.ADA = False
@@ -34,32 +34,25 @@ _C.DATASET.ADA_kimg = 500
 # ------ Model ------
 _C.MODEL = CN()
 _C.MODEL.z_dim = 512
-# _C.MODEL.CHANNEL_MULTIPLIER = 2
-_C.MODEL.extra_channel = 0
-_C.MODEL.use_style_encoder = False
+_C.MODEL.w_dim = 512
 
-_C.MODEL.G_MAP = CN()
-_C.MODEL.G_MAP.embed_dim = 0
-_C.MODEL.G_MAP.dlatent_dim = 512
-_C.MODEL.G_MAP.num_layer = 8
-_C.MODEL.G_MAP.num_channel = 512
-_C.MODEL.G_MAP.lrmul = 0.01
+_C.MODEL.MAPPING = CN()
+_C.MODEL.MAPPING.num_layers = 8
+_C.MODEL.MAPPING.embed_dim = 512  # Force to zero if no label(len(classes) == 1)
+_C.MODEL.MAPPING.layer_dim = 512
+_C.MODEL.MAPPING.lrmul = 0.01
 
-_C.MODEL.STYLE_ENCODER = CN()
-_C.MODEL.STYLE_ENCODER.nf_in = 3
-_C.MODEL.STYLE_ENCODER.max_nf = 256
-_C.MODEL.STYLE_ENCODER.dlatent_dim = 256
+_C.MODEL.POSE_ENCODER = CN()
+_C.MODEL.POSE_ENCODER
 
-_C.MODEL.G_SYNTHESIS = CN()
-_C.MODEL.G_SYNTHESIS.fmap_base = 16384
-_C.MODEL.G_SYNTHESIS.fmap_decay = 1.0
-_C.MODEL.G_SYNTHESIS.fmap_min = 1
-_C.MODEL.G_SYNTHESIS.fmap_max = 512
-_C.MODEL.G_SYNTHESIS.use_content_encoder = False
-
-_C.MODEL.G_SYNTHESIS.content_encoder_kwargs = CN()
-_C.MODEL.G_SYNTHESIS.content_encoder_kwargs.nf_in = 3
-_C.MODEL.G_SYNTHESIS.content_encoder_kwargs.max_nf = 512
+_C.MODEL.SYNTHESIS = CN()
+_C.MODEL.SYNTHESIS.architecture = 'skip'  # TODO: add other architectures
+_C.MODEL.SYNTHESIS.bottom_res = 4
+_C.MODEL.SYNTHESIS.pose_on = False
+_C.MODEL.SYNTHESIS.pose_encoder_kwargs = CN(new_allowed=True)
+_C.MODEL.SYNTHESIS.pose_encoder_kwargs.name = 'DefaultPoseEncoder'
+_C.MODEL.SYNTHESIS.channel_base = 32768
+_C.MODEL.SYNTHESIS.channel_max = 512
 
 # ----- training ------
 _C.TRAIN = CN()
@@ -113,6 +106,7 @@ def get_cfg_defaults():
     return cfg
 
 
+# legacy. It seems we can directly unpacking cfgNode to function
 def convert_to_dict(cfg_node, key_list=[]):
     """ Convert a config node to dictionary """
     if not isinstance(cfg_node, CN):

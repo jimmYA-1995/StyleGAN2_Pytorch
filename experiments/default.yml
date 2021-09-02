@@ -1,18 +1,17 @@
 # Please refer config.py to default configuration.
-name: 'wandb-exp-name'
+name: 'One-Pass-face-human'
 description: >
-    Default configuration after add adaptive data augmentation(StyleGAN-ada)
+    Default configuration for synthesis of face & human.
 outdir: 'results'
 n_sample: 64
-sample_ds:
-- DeepFashionDataset
-- FakeDeepFashionFace
 resolution: 256
-num_classes: 1
+classes:
+- 'face'
+- 'DeepFashion'
 
 DATASET:
   workers: 4
-  dataset: DeepFashionDataset
+  dataset: DeepFashion
   roots:
     - '~/data/deepfashion'
   source:
@@ -27,9 +26,9 @@ DATASET:
     - 0.5
     - 0.5
     - 0.5
+  xflip: true
   kwargs:
-    resampling: pred
-  xflip: false
+    pose_on: True
   pin_memory: true
   ADA: false
   ADA_target: 0.6  # set 0 to fix prob.
@@ -39,27 +38,22 @@ DATASET:
 
 MODEL:
   z_dim: 512
-  # CHANNEL_MULTIPLIER: 2
-  extra_channel: 0
-  use_style_encoder: true
+  w_dim: 512
 
-  G_MAP:
-    embed_dim: 0
-    dlatent_dim: 400
-    num_layer: 8
-    num_channel: 512
+  MAPPING:
+    num_layers: 8
+    # embed_dim: 512
+    # layer_dim: 512
     lrmul: 0.01
   
-  STYLE_ENCODER:
-    nf_in: 3
-    max_nf: 256
-    dlatent_dim: 112
-  
-  G_SYNTHESIS:
-    use_content_encoder: true
-    content_encoder_kwargs:
-      nf_in: 4
-      max_nf: 256
+  SYNTHESIS:
+    bottom_res: 4
+    pose_on: true
+    pose_encoder_kwargs:
+      name: HeatmapSplitsEncoder
+      max_channels: 512
+      heatmap_size: 256
+      channel_splits: [5, 12]
 
 TRAIN:
   iteration: 100
@@ -68,9 +62,9 @@ TRAIN:
   r1: 10
   path_reg_gain: 2
   path_bs_shrink: 2
-  Greg_every: 4
+  Greg_every: 8
   Dreg_every: 16
-  style_mixing_prob: 0.9
+  style_mixing_prob: 0.0
   ckpt: ''
   save_ckpt_every: 6250
   ckpt_max_keep: -1

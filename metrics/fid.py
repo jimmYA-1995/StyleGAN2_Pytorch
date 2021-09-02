@@ -76,7 +76,7 @@ class FIDTracker():
             if self.cfg.dataset != cfg_val.dataset:
                 val_setting['kwargs'] = None
             override(cfg_val, val_setting)
-        self.val_dataset = get_dataset(cfg_val, split='val')
+        self.val_dataset = get_dataset(cfg_val, split='all')
         self.log.info(f"validation dataset: {self.val_dataset.classes}")
 
     @classmethod
@@ -179,8 +179,8 @@ class FIDTracker():
 
             # TODO: update progress bar to samples instead of batch
             for _ in self.pbar(len(batch_sampler)):
-                imgs, *_ = next(loader)
-                imgs = imgs.to(self.device)
+                *imgs, _ = next(loader)
+                imgs = imgs[i].to(self.device)
                 feature = self.inceptionV3(imgs)[0].view(imgs.shape[0], -1)
                 if self.num_gpus > 1:
                     _features = []
@@ -228,32 +228,31 @@ class FIDTracker():
                                                      num_workers=ds.cfg.workers,
                                                      worker_init_fn=ds.__class__.worker_init_fn)
 
-            features = []
+            fs = [[], []]
             loader = iter(dataloader)
             for i in self.pbar(len(batch_sampler)):
-                body_imgs, face_imgs, mask, heatmaps = [x.to(self.device) for x in next(loader)]
-                # if len(args) == 2:
-                #     fake_body, mask = args
-                #     masked_body = torch.cat([(fake_body * mask), mask], dim=1)
-                # else:
-                masked_body = torch.cat([(body_imgs * mask), mask], dim=1)
-                latent = torch.randn(body_imgs.shape[0], generator.z_dim, device=self.device)
+                _, _, heatmaps = [x.to(self.device) for x in next(loader)]
+                z = torch.randn(heatmaps.shape[0], generator.z_dim, device=self.device)
 
-                imgs, _ = generator([latent], style_in=face_imgs, content_in=masked_body, pose_in=heatmaps, noise_mode='const')
-
-                feature = self.inceptionV3(imgs[:, :3, :, :])[0].view(imgs.shape[0], -1)
-                if self.num_gpus > 1:
-                    _features = []
-                    for src in range(self.num_gpus):
-                        y = feature.clone()
-                        torch.distributed.broadcast(y, src=src)
-                        _features.append(y)
-                    feature = torch.stack(_features, dim=1).flatten(0, 1)
-                features.append(feature)
-
-            features = torch.cat(features, 0)[:self.cfg.n_sample].cpu().numpy()
-            sample_means.append(np.mean(features, 0))
-            sample_covs.append(np.cov(features, rowvar=False))
+                imgs, _ = generator(z, c=None, pose=heatmaps, noise_mode='const')
+                fake_imgs = torch.split(imgs, [3, 3], dim=1)
+                
+                for features, imgs in zip(fs, fake_imgs):
+                    feature = self.inceptionV3(imgs)[0].view(imgs.shape[0], -1)
+                    if self.num_gpus > 1:
+                        _features = []
+                        for src in range(self.num_gpus):
+                            y = feature.clone()
+                            torch.distributed.broadcast(y, src=src)
+                            _features.append(y)
+                        feature = torch.stack(_features, dim=1).flatten(0, 1)
+                    features.append(feature)
+            
+            for features in fs:
+                features = torch.cat(features, 0)[:self.cfg.n_sample].cpu().numpy()
+                sample_means.append(np.mean(features, 0))
+                sample_covs.append(np.cov(features, rowvar=False))
+            break
 
         return sample_means, sample_covs
 
@@ -304,7 +303,7 @@ def subprocess_fn(rank, args, cfg, temp_dir):
             use_style_encoder=cfg.MODEL.use_style_encoder,
             map_kwargs=cfg.MODEL.G_MAP,
             style_encoder_kwargs=cfg.MODEL.STYLE_ENCODER,
-            synthesis_kwargs=cfg.MODEL.G_SYNTHESIS,
+            synthesis_kwargs=cfg.MODEL.SYNTHESIS,
             is_training=False
         )
         g.load_state_dict(ckpt['g_ema'])

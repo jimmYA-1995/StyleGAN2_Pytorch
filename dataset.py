@@ -14,7 +14,7 @@ from PIL import Image
 from torch.utils import data
 from torchvision import transforms
 from torchvision.datasets import ImageFolder
-
+from misc import cords_to_map, draw_pose_from_cords
 
 ALLOW_EXTS = ['jpg', 'jpeg', 'png', 'JPEG']
 
@@ -35,19 +35,15 @@ def ImageFolderDataset(config, resolution, transform=None):
     return ImageFolder(config.roots[0], transform=transform, loader=image_loader, is_valid_file=check_valid)
 
 
-class ResamplingDatasetV2(data.Dataset):
-    Gaussian = namedtuple('Gaussian', 'X_mean X_std cx_mean cx_std cy_mean cy_std')
-    Gaussian.__qualname__ = "ResamplingDatasetV2.Gaussian"
+class DefaultDataset(data.Dataset):
 
     def __init__(self, cfg, split='train'):
-        """  Resampling faces position & 2d orientation """
         assert len(cfg.roots) == len(cfg.source) == 1
         assert split in ['train', 'val', 'test', 'all']
         self.cfg = cfg
         self.root = Path(cfg.roots[0]).expanduser()
         self.face_dir = None
         self.fileIDs = None
-        self.info = None  # face information
         self.idx = None
         self.resolution = cfg.resolution
         self.split = split
@@ -57,11 +53,6 @@ class ResamplingDatasetV2(data.Dataset):
             transforms.Normalize(cfg.mean, cfg.std, inplace=True),
         ])
         self._mask_transform = transforms.ToTensor()
-
-        # statistics
-        self.rng = None
-        self.big = ResamplingDatasetV2.Gaussian(78.08, 11.18, 517.075, 26.655, 131.60, 24.41)
-        self.small = ResamplingDatasetV2.Gaussian(44.56, 3.32, 517.075, 26.655, 100.36, 17.22)
 
     def __len__(self):
         return len(self.fileIDs) * 2 if self.xflip else len(self.fileIDs)
@@ -83,52 +74,6 @@ class ResamplingDatasetV2(data.Dataset):
     def mask_transform(self, img):
         img = self.maybe_xflip(img)
         return self._mask_transform(img)
-
-    def resample_face_position(self, face, face_angle, c=None):
-        if self.rng is None:
-            if torch.utils.data.get_worker_info():
-                raise RuntimeError("using worker_init_fn to set RNG when num_wokers > 0")
-            # main process (when num_workers=0)
-            self.rng = np.random.default_rng()
-
-        # get quad coord. (in 1024x1024 context)
-        dist = self.big if self.rng.random() < 0.7 else self.small
-        rho = self.rng.normal(loc=dist.X_mean, scale=dist.X_std, size=())
-        if c is None:
-            cx = self.rng.normal(loc=dist.cx_mean, scale=dist.cx_std, size=())
-            cy = self.rng.normal(loc=dist.cy_mean, scale=dist.cy_std, size=())
-            c = np.hstack([cx, cy])
-        x = np.hstack([rho * np.cos(face_angle), rho * np.sin(face_angle)])
-        y = np.flipud(x) * [-1, 1]
-        quad = np.stack([c - x - y, c - x + y, c + x + y, c + x - y]).astype(np.float32)
-
-        # warp
-        face_np = np.asarray(face)
-        res = face_np.shape[0]
-        src = np.array([[0, 0], [0, res], [res, res], [res, 0]], dtype=np.float32)
-
-        longest_side = (quad.max(axis=0) - quad.min(axis=0)).max()
-        ratio = longest_side / res
-        q = (quad - quad.min(axis=0)) / ratio
-
-        M = cv2.getPerspectiveTransform(src, q)
-        shrink = int(res * ratio * res / 1024)
-        offset_x, offset_y = (quad.min(axis=0) / 4).astype(int)
-        mb = cv2.warpPerspective(face_np, M, (res, res), borderMode=cv2.BORDER_CONSTANT, borderValue=(127, 127, 127))
-
-        fm = np.any(mb != 127, axis=-1).astype(np.uint8) * 255
-        fm = Image.fromarray(fm, mode='L').resize((shrink, shrink), Image.LANCZOS)
-        fake_mask = Image.new('1', (res, res))
-        fake_mask.paste(fm, (offset_x, offset_y))
-
-        mb = Image.fromarray(mb).resize((shrink, shrink), Image.LANCZOS)
-        masked_body = Image.new('RGB', (res, res), color=(127, 127, 127))
-        masked_body.paste(mb, (offset_x, offset_y))
-
-        masked_body = self.img_transform(masked_body)
-        fake_mask = self.mask_transform(fake_mask)
-
-        return masked_body, fake_mask
 
     @classmethod
     def worker_init_fn(cls, worker_id):
@@ -141,199 +86,61 @@ class ResamplingDatasetV2(data.Dataset):
             dataset.rng = np.random.default_rng(worker_seed)
 
 
-class DeepFashionDataset(ResamplingDatasetV2):
-    def __init__(self, cfg, split='train', resampling=None, num_items=None):
-        super(DeepFashionDataset, self).__init__(cfg, split=split)
-        self.classes = ["DF_real"]
-        self.resampling = resampling
-        if self.resampling:
-            raise RuntimeError("not support resampling on pose condition")
+class DeepFashion(DefaultDataset):
+    def __init__(self, cfg, split='train', pose_on=False, sample=False, num_items=None):
+        super().__init__(cfg, split=split)
+        self.classes = ["DF_real_face", "DF_real_human"]
+        self.pose_on = pose_on
+        self.sample = sample
 
+        # File ID
         split_map = pickle.load(open(self.root / 'new_split.pkl', 'rb'))
-        if split == 'all':
-            self.fileIDs = [ID for IDs in split_map.values() for ID in IDs]
-        else:
-            self.fileIDs = split_map[split]
+        self.fileIDs = [ID for IDs in split_map.values() for ID in IDs] if split == 'all' else split_map[split]
         self.fileIDs.sort()
         if num_items:
             self.fileIDs = self.fileIDs[:min(len(self.fileIDs), num_items)]
+        self.size = {"DF_real_face": self.__len__(), "DF_real_human": self.__len__()}
+        self.labels = np.zeros((len(self),), dtype=int)
 
         src = cfg.source[0]
         self.face_dir = self.root / src / 'face'
-        self.mask_dir = self.root / src / 'mask'
-        self.heatmap_dir = self.root / 'kp_heatmaps/heatmaps'
         self.target_dir = self.root / f'r{self.resolution}' / 'images'
-        assert self.face_dir.exists() and self.mask_dir.exists() and self.target_dir.exists()
+        assert self.face_dir.exists() and self.target_dir.exists()
         assert set(self.fileIDs) <= set(p.stem for p in self.face_dir.glob('*.png'))
-        assert set(self.fileIDs) <= set(p.stem for p in self.mask_dir.glob('*.png'))
         assert set(self.fileIDs) <= set(p.stem for p in self.target_dir.glob('*.png'))
 
-        if resampling:
-            assert resampling in ['gt', 'pred']
-            # file_stem -> {gt, pred}
-            self.info = pickle.load(open(self.root / src / 'real_face_phi.pkl', 'rb'))
+        if pose_on:
+            self.kp_dir = self.root / 'kp_heatmaps/keypoints'
+            assert self.kp_dir.exists() and set(self.fileIDs) <= set(p.stem for p in self.kp_dir.glob('*.pkl'))
 
     def __getitem__(self, idx):
         self.idx = idx
-        fileID = self.fileIDs[idx % len(self.fileIDs)] if self.xflip else self.fileIDs[idx]
+        try:
+            fileID = self.fileIDs[idx % len(self.fileIDs)] if self.xflip else self.fileIDs[idx]
+        except IndexError as e:
+            print(self.xflip, idx)
+            raise RuntimeError(e)
 
-        _face = Image.open(self.face_dir / f'{fileID}.png')
-        heatmaps = pickle.load(open(self.heatmap_dir / f'{fileID}.pkl', 'rb'))[0]
-        if self.xflip and idx < len(self.fileIDs):
-            heatmaps = heatmaps[:, :, ::-1]
-        heatmaps = torch.sigmoid(torch.from_numpy(heatmaps.copy()))
+        face = Image.open(self.face_dir / f'{fileID}.png')
         target = Image.open(self.target_dir / f'{fileID}.png')
-        assert _face.mode == 'RGB' and target.mode == 'RGB'
-        face = self.img_transform(_face)
+        assert face.mode == 'RGB' and target.mode == 'RGB'
+        face = self.img_transform(face)
         target = self.img_transform(target)
 
-        if self.resampling:
-            p = np.unravel_index(heatmaps[0].argmax(), heatmaps[0].shape)
-            c = np.array([p[1], p[0]]) * 1024 / 56
-            masked_body, fake_mask = self.resample_face_position(_face, self.info[fileID][self.resampling], c=c)
-            return target, face, fake_mask, masked_body
+        if self.pose_on:
+            kp = pickle.load(open(self.kp_dir / f'{fileID}.pkl', 'rb'))[0][:, (1, 0, 2)]  # [K, (y, x, score)]
+            cords = np.where(kp[:, 2:3] > 0.1, kp[:, :2], -np.ones_like(kp[:, :2]))
+            heatmaps = cords_to_map(cords, (256, 256), sigma=8)
+            if self.xflip and idx < len(self.fileIDs):
+                heatmaps = heatmaps[:, ::-1]
+            heatmaps = torch.from_numpy(heatmaps.transpose(2, 0, 1).copy())
+            if self.sample:
+                colors, mask = draw_pose_from_cords(cords.astype(int), (256, 256))
+                vis_kp = torch.from_numpy((colors.astype(np.float32) - 127.5 / 127.5).transpose(2, 0, 1).copy())
+                return vis_kp, heatmaps
+            return face, target, heatmaps
 
-        real_mask = Image.open(self.mask_dir / f'{fileID}.png')
-        assert real_mask.mode == 'L'
-        real_mask = self.mask_transform(real_mask)
-
-        return target, face, real_mask, heatmaps
-
-
-class FakeDeepFashionFace(ResamplingDatasetV2):
-    def __init__(self, cfg, split='train', num_items=None):
-        """  Resampling position & angles for fake faces
-        """
-        assert split in ['train', 'val']
-        super(FakeDeepFashionFace, self).__init__(cfg, split=split)
-        self.classes = ["DF_fake"]
-
-        self.face_dir = self.root / cfg.source[0] / 'fake_face'
-        assert self.face_dir.exists()
-
-        self.info = pickle.load(open(self.root / cfg.source[0] / 'fake_face_phi.pkl', 'rb'))  # file_stem: phi
-        fileIDs = sorted(k for k in self.info.keys())
-        self.fileIDs = fileIDs[:len(fileIDs) // 2] if split == 'train' else fileIDs[len(fileIDs) // 2:]
-        if num_items:
-            self.fileIDs = self.fileIDs[:min(len(self.fileIDs), num_items)]
-        assert set(self.fileIDs) <= set(p.stem for p in self.face_dir.glob('*.png'))
-
-    def __getitem__(self, idx):
-        self.idx = idx
-        fileID = self.fileIDs[idx % len(self.fileIDs)] if self.xflip else self.fileIDs[idx]
-        face = Image.open(self.face_dir / f"{fileID}.png")
-        masked_body, mask = self.resample_face_position(face, self.info[fileID])
-
-        face = self.img_transform(face)
-
-        return masked_body, face, mask
-
-
-class UnalignDataset(data.Dataset):
-    def __init__(self, cfg, split='train', num_items=None):
-        """   """
-        assert len(cfg.roots) == len(cfg.source) == 1
-        assert split in ['train', 'val']
-
-        self.classes = ["DF_fake_unalign"]
-        self.cfg = cfg
-        self.root = Path(cfg.roots[0]).expanduser()
-        self.idx = None
-        self.resolution = cfg.resolution
-        self.split = split
-        self.xflip = cfg.xflip
-        self._img_transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize(cfg.mean, cfg.std, inplace=True),
-        ])
-        self._mask_transform = transforms.ToTensor()
-
-        src = cfg.source[0]
-        self.face_dir = self.root / src / 'fake_face'
-        self.heatmaps = list((self.root / 'kp_heatmaps/heatmaps').glob('*.pkl'))
-        assert self.face_dir.exists()
-        fileIDs = sorted(p.stem for p in self.face_dir.glob('*.png'))
-        self.fileIDs = fileIDs[:len(fileIDs) // 2] if split == 'train' else fileIDs[len(fileIDs) // 2:]
-        if num_items is not None:
-            assert isinstance(num_items, int)
-            self.fileIDs = self.fileIDs[:min(len(fileIDs), num_items)]
-
-        self.info = pickle.load(open(self.root / src / 'real_crop_coord.pkl', 'rb'))  # face information
-
-    def __len__(self):
-        return len(self.fileIDs) * 2 if self.xflip else len(self.fileIDs)
-
-    def maybe_xflip(self, img):
-        """ xflip if xflip enabled and index > len(ds) / 2,
-            no op. otherwise
-        """
-        assert isinstance(img, Image.Image) and self.idx is not None
-        if not self.xflip or self.idx < len(self.fileIDs):
-            return img
-
-        return img.transpose(method=Image.FLIP_LEFT_RIGHT)
-
-    def img_transform(self, img):
-        img = self.maybe_xflip(img)
-        return self._img_transform(img)
-
-    def mask_transform(self, img):
-        img = self.maybe_xflip(img)
-        return self._mask_transform(img)
-
-    def __getitem__(self, idx):
-        self.idx = idx
-        fileID = self.fileIDs[idx % len(self.fileIDs)] if self.xflip else self.fileIDs[idx]
-
-        _face = Image.open(self.face_dir / f'{fileID}.png')
-        face_np = np.asarray(_face)
-        assert _face.mode == 'RGB'
-        face = self.img_transform(_face)
-        heatmaps = pickle.load(open(random.choice(self.heatmaps), 'rb'))[0]
-        if self.xflip and idx < len(self.fileIDs):
-            heatmaps = heatmaps[:, :, ::-1]
-        heatmaps = torch.sigmoid(torch.from_numpy(heatmaps.copy()))
-
-        # decide mode
-        mode = 'bound'
-        for chan in cv2.split(face_np[:5]):
-            hist = cv2.calcHist([chan], [0], None, [256], [0, 256])
-            if not 120 <= hist.argmax() <= 140:
-                mode = 'others'
-
-        canvas = np.full((256, 256, 3), 128, dtype=np.uint8)
-        crop = np.array(random.choice(self.info[mode])) // 4  # 1024 -> 256
-        out_w = crop[2] - crop[0] + 1
-        cx = np.unravel_index(heatmaps[0].argmax(), heatmaps[0].shape)[1] * 256 / 56
-        crop[0], crop[2] = cx - (out_w / 2), cx + (out_w / 2)
-        crop = np.clip(crop, 0, 255).astype(int)
-
-        if mode == 'bound':
-            check_points = range(0, face_np.shape[1], face_np.shape[1] // 5)
-            for i in range(face_np.shape[0]):
-                if np.any(face_np[i, check_points] < 100) or np.any(face_np[i, check_points] > 160):
-                    break
-
-            face_np = face_np[i:, :, :]
-            out_w = crop[2] - crop[0] + 1
-            out_h = int(out_w * face_np.shape[0] / face_np.shape[1])
-            face_np = cv2.resize(face_np, (out_w, out_h), interpolation=cv2.INTER_LANCZOS4)
-            canvas[:out_h, crop[0]:crop[0] + out_w] = face_np
-        else:
-            out_h = out_w = crop[2] - crop[0] + 1
-            face_np = cv2.resize(face_np, (out_w, out_h), interpolation=cv2.INTER_LANCZOS4)
-            canvas[crop[1]:crop[1] + out_h, crop[0]:crop[0] + out_w] = face_np
-
-        mask = torch.from_numpy((canvas != 128).any(axis=-1).astype(np.float32)[None, ...])
-        masked_body = self.img_transform(Image.fromarray(canvas))
-
-        return masked_body, face, mask, heatmaps
-
-    @classmethod
-    def worker_init_fn(cls, worker_id):
-        """ For reproducibility & randomness in multi-worker mode """
-        worker_seed = torch.initial_seed() % 2**32
-        np.random.seed(worker_seed)
+        return face, target
 
 
 class ConditionalBatchSampler(data.sampler.BatchSampler):
@@ -481,7 +288,7 @@ def get_dataloader(ds, batch_size, distributed=False, **override_kwargs):
 
     if distributed:
         # https://discuss.pytorch.org/t/distributedsampler/90205/2?u=jimmya-1995
-        assert ds.split == 'train', "dist. sampler is only used in training"
+        assert ds.split in ['train', 'all'], "dist. sampler is only used in training"
         assert 'sampler' not in override_kwargs
         loader_kwargs['sampler'] = data.distributed.DistributedSampler(ds, shuffle=True)
     else:

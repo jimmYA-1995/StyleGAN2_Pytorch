@@ -1,1 +1,1 @@
-from .models import Generator, Discriminator
+from .networks import Generator, Discriminator
