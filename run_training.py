@@ -4,6 +4,7 @@ import copy
 import shutil
 import random
 import argparse
+import warnings 
 from time import time
 from pathlib import Path
 from collections import OrderedDict
@@ -470,8 +471,8 @@ if __name__ == '__main__':
                     raise UserError("Fail to parse #iteration from checkpoint filename. Valid format is 'ckpt-<#iter>.pt'")
 
                 if run.starting_step != start_iter:
-                    raise UserError(f"non-increased step in log cal is not allowed in Wandb."
-                                    f"Please unset WANDB_RESUME env variable or set correct checkpoint.")
+                    warnings.warn(f"non-increased step in log cal is not allowed in Wandb."
+                                  f"It will cause wandb skip logging until last step in previous run")
 
             args.wandb_id = run.id
 
