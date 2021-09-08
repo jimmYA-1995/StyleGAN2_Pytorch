@@ -1,6 +1,7 @@
-import os
+import atexit
 import logging
 import numpy as np
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 from skimage.draw import circle, line_aa
@@ -35,25 +36,25 @@ class EasyDict(dict):
         del self[name]
 
 
-class CustomFormatter(logging.Formatter):
+class ColorfulFormatter(logging.Formatter):
     """ Logging Formatter  to add colors and count warning / errors"""
     def __init__(self, name):
-        gray     = "\x1b[38;21m"
-        green    = "\x1b[32;21m"
-        yellow   = "\x1b[33;21m"
-        red      = "\x1b[31;21m"
-        bold_red = "\x1b[31;1m"
-        reset    = "\x1b[0m"
-        format   = f"<{name}> %(message)s (%(filename)s:%(lineno)d)"
+        gray = "\x1b[38;21m"
+        green = "\x1b[32;21m"
+        yellow = "\x1b[33;21m"
+        blink_red = "\x1b[5m\x1b[31;21m"
+        blink_bold_red = "\x1b[5m\x1b[31;1m"
+        reset = "\x1b[0m"
+        format = f"<{name}> %(message)s (%(filename)s:%(lineno)d)"
 
         self.FORMATS = {
             'DEBUG': gray + format + reset,
             'INFO': green + format + reset,
             'WARNING': yellow + format + reset,
-            'ERROR': red + format + reset,
-            'CRITICAL': bold_red + format + reset,
+            'ERROR': blink_red + format + reset,
+            'CRITICAL': blink_bold_red + format + reset,
         }
-        super(CustomFormatter, self).__init__()
+        super(ColorfulFormatter, self).__init__()
 
     def format(self, record):
         log_fmt = self.FORMATS[record.levelname]
@@ -61,7 +62,12 @@ class CustomFormatter(logging.Formatter):
         return formatter.format(record)
 
 
-def create_logger(local_rank, out_dir=None, debug=False, **kwargs):
+@lru_cache()  # so that calling setup_logger multiple times won't add many handlers
+def setup_logger(local_rank, out_dir=None, debug=False, **kwargs):
+    """
+    Initialize loggers. Only master can log info. to stdout and the messages
+    from other workers will displayed in logfile & debug mode.
+    """
     if out_dir is not None:
         if not isinstance(out_dir, Path):
             out_dir = Path(out_dir)
@@ -75,28 +81,35 @@ def create_logger(local_rank, out_dir=None, debug=False, **kwargs):
     logger.setLevel(getattr(logging, loglevel))
     ch = logging.StreamHandler()
     ch.setLevel(getattr(logging, loglevel))
-    ch.setFormatter(CustomFormatter(logger_name))
+    ch.setFormatter(ColorfulFormatter(logger_name))
     logger.addHandler(ch)
 
     # disable PIL dubug mode
     pil_logger = logging.getLogger('PIL')
     pil_logger.setLevel(logging.INFO)
 
-    if local_rank == 0 and out_dir:
-        # TODO: logging to a single file from multiple processes
-        # https://docs.python.org/3/howto/logging-cookbook.html#logging-to-a-single-file-from-multiple-processes
-        assert out_dir is not None
-        filename = out_dir / 'experiment.log'
-        head = "%(levelname)-8s - %(asctime)-15s - %(message)s (%(filename)s:%(lineno)d)"
-        fh = logging.FileHandler(filename)
+    # https://docs.python.org/3/howto/logging-cookbook.html#logging-to-a-single-file-from-multiple-processes
+    if out_dir:
+        filename = out_dir / f'log_{logger_name}.txt'
+        plain_formatter = "%(levelname)-8s - %(asctime)-15s - %(message)s (%(filename)s:%(lineno)d)"
+        fh = logging.StreamHandler(_cached_log_stream(filename))
         fh.setLevel(getattr(logging, loglevel))
-        fh.setFormatter(logging.Formatter(head))
+        fh.setFormatter(logging.Formatter(plain_formatter))
         logger.addHandler(fh)
 
     return logger
 
 
-def prepare_training(args, cfg):
+# cache the opened file object, so that different calls to `setup_logger`
+# with the same file name can safely write to the same file.
+@lru_cache(maxsize=None)
+def _cached_log_stream(filename):
+    io = open(filename, "a", buffering=-1)
+    atexit.register(io.close)
+    return io
+
+
+def setup_outdir(args, cfg):
     """ populate necessary directories """
     if not args.out_dir:
         root_dir = Path(cfg.outdir)
@@ -161,5 +174,3 @@ def draw_pose_from_cords(pose_joints, img_size, radius=2, draw_joints=True):
         mask[yy, xx] = True
 
     return colors, mask
-
-    

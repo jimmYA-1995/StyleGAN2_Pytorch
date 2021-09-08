@@ -165,7 +165,7 @@ class Generator(nn.Module):
         self.mapping = MappingNetwork(z_dim, w_dim, len(classes), **mapping_kwargs)
 
     def forward(self, z, c=None, pose=None, return_dlatent=False, **synthesis_kwargs):
-        # TODO: enable style mixing training
+        # TODO enable style mixing training
         assert z.shape[1] == self.z_dim
         z = normalize_2nd_moment(z.to(torch.float32))
 

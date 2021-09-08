@@ -1,7 +1,8 @@
 # Please refer config.py to default configuration.
-name: 'One-Pass-face-human'
+name: 'FaceHuman-KD-attention'
 description: >
     Default configuration for synthesis of face & human.
+    Core method: Knowledge Distillation + Attention feature matching + infoNCE
 outdir: 'results'
 n_sample: 64
 resolution: 256

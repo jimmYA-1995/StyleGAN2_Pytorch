@@ -4,7 +4,7 @@ import copy
 import shutil
 import random
 import argparse
-import warnings 
+import warnings
 from time import time
 from pathlib import Path
 from collections import OrderedDict
@@ -19,12 +19,12 @@ from torch.cuda.amp import autocast, GradScaler
 
 import misc
 from torch_utils.ops import conv2d_gradfix, grid_sample_gradfix
-from torch_utils.misc import print_module_summary, constant
+from torch_utils.misc import constant
 from config import get_cfg_defaults, convert_to_dict, override
 from dataset import get_dataset, get_dataloader
-from models import Generator, Discriminator
+from models.utils import create_model, ema, print_module_summary
 from augment import AugmentPipe
-from losses import nonsaturating_loss, path_regularize, logistic_loss, d_r1_loss, MaskedRecLoss
+from losses import nonsaturating_loss, path_regularize, logistic_loss, d_r1_loss
 from metrics.fid import FIDTracker
 
 
@@ -32,17 +32,34 @@ class UserError(Exception):
     pass
 
 
+def launch_wandb(cfg):
+    run = wandb.init(
+        project=f'stylegan2-{Path(args.cfg).stem}',
+        config=convert_to_dict(cfg),
+        notes=cfg.description,
+        tags=['finetune'] if cfg.TRAIN.ckpt else None,
+    )
+
+    if cfg.name:
+        run.name = cfg.name
+
+    if run.resumed:
+        assert cfg.TRAIN.ckpt
+        try:
+            start_iter = int(Path(cfg.TRAIN.ckpt).stem.split('-')[1])
+        except ValueError:
+            raise UserError("Fail to parse #iteration from checkpoint filename. Valid format is 'ckpt-<#iter>.pt'")
+
+        if run.starting_step != start_iter:
+            warnings.warn("non-increased step in log cal is not allowed in Wandb."
+                          "It will cause wandb skip logging until last step in previous run")
+
+    return run
+
+
 def requires_grad(model, flag=True):
     for p in model.parameters():
         p.requires_grad = flag
-
-
-def accumulate(model1, model2, decay=0.999):
-    par1 = dict(model1.named_parameters())
-    par2 = dict(model2.named_parameters())
-
-    for k in par1.keys():
-        par1[k].data.mul_(decay).add_(par2[k].data, alpha=1 - decay)
 
 
 def sample_data(loader, ddp=False):
@@ -80,6 +97,7 @@ class Trainer():
         self.metrics = cfg.EVAL.metrics.split(',')
         self.fid_tracker = None
         self.sample = None
+        self.start_iter = 0
         self.autocast = args.autocast
 
         # reproducibility
@@ -101,55 +119,26 @@ class Trainer():
         self.g_scaler = GradScaler(enabled=args.gradscale)
         self.d_scaler = GradScaler(enabled=args.gradscale)
 
-        # Datset
+        # dataset
         self.log.info("Prepare dataloader")
         self.loader = get_dataloader(get_dataset(cfg.DATASET, split='all'),
                                      self.batch_gpu, distributed=self.ddp, persistent_workers=True)
 
         # Define model
-        self.g = Generator(
-            cfg.MODEL.z_dim,
-            cfg.MODEL.w_dim,
-            cfg.classes,
-            cfg.resolution,
-            mapping_kwargs=cfg.MODEL.MAPPING,
-            synthesis_kwargs=cfg.MODEL.SYNTHESIS,
-        ).to(self.device)
-
-        self.d = Discriminator(1, cfg.resolution, img_channels=6).to(self.device)  # fix #class to 1
+        self.g, self.d = create_model(cfg)
         self.g_ema = copy.deepcopy(self.g).eval()
 
         if cfg.DATASET.ADA:
             self.augment_pipe = AugmentPipe(**cfg.ADA).train().requires_grad_(False).to(self.device)
             self.augment_pipe.p.copy_(torch.as_tensor(cfg.DATASET.ADA_p))
 
-        # Define optimizers
+        # Define optimizers (Lazy regularizer)
         g_reg_ratio = cfg.TRAIN.Greg_every / (cfg.TRAIN.Greg_every + 1)
         d_reg_ratio = cfg.TRAIN.Dreg_every / (cfg.TRAIN.Dreg_every + 1)
         self.g_optim = optim.Adam(self.g.parameters(), lr=cfg.TRAIN.lrate * g_reg_ratio, betas=(0 ** g_reg_ratio, 0.99 ** g_reg_ratio))
         self.d_optim = optim.Adam(self.d.parameters(), lr=cfg.TRAIN.lrate * d_reg_ratio, betas=(0 ** d_reg_ratio, 0.99 ** d_reg_ratio))
 
-        # resume from checkpoints if given
-        self.start_iter = 0
-        if cfg.TRAIN.ckpt:
-            print(f'resume model from {cfg.TRAIN.ckpt}')
-            ckpt = torch.load(cfg.TRAIN.ckpt, map_location=self.device)
-
-            self.g.load_state_dict(ckpt['g'])
-            self.d.load_state_dict(ckpt['d'])
-            self.g_ema.load_state_dict(ckpt['g_ema'])
-
-            self.g_optim.load_state_dict(ckpt['g_optim'])
-            self.d_optim.load_state_dict(ckpt['d_optim'])
-
-            if 'g_scaler' in ckpt.keys():
-                self.g_scaler.load_state_dict(ckpt['g_scaler'])
-                self.d_scaler.load_state_dict(ckpt['d_scaler'])
-
-            try:
-                self.start_iter = int(Path(cfg.TRAIN.ckpt).stem.split('-')[1])
-            except ValueError:
-                raise UserError("Fail to parse #iteration from checkpoint filename. Valid format is 'ckpt-<#iter>.pt'")
+        self.resume_from_checkpoint(cfg.TRAIN.ckpt)
 
         # Print network summary tables
         if self.local_rank == 0:
@@ -175,9 +164,34 @@ class Trainer():
                 broadcast_buffers=False
             )
 
-        # init. FID tracker if needed.
+        # Metrics
         if 'fid' in self.metrics:
             self.fid_tracker = FIDTracker(cfg, self.local_rank, self.num_gpus, self.out_dir)
+
+    def resume_from_checkpoint(self, ckpt_path):
+        if not ckpt_path:
+            return
+
+        print(f'resume model from {ckpt_path}')
+        ckpt = torch.load(ckpt_path, map_location=self.device)
+
+        self.g.load_state_dict(ckpt['g'])
+        self.d.load_state_dict(ckpt['d'])
+        self.g_ema.load_state_dict(ckpt['g_ema'])
+
+        self.g_optim.load_state_dict(ckpt['g_optim'])
+        self.d_optim.load_state_dict(ckpt['d_optim'])
+
+        if 'g_scaler' in ckpt.keys():
+            self.g_scaler.load_state_dict(ckpt['g_scaler'])
+            self.d_scaler.load_state_dict(ckpt['d_scaler'])
+
+        self.mean_path_length = ckpt.get('mean_path_lenght', 0.0)
+        self.ada_p = ckpt.get('ada_p', 0.0)
+        try:
+            self.start_iter = int(Path(ckpt_path).stem.split('-')[1])
+        except ValueError:
+            raise UserError("Fail to parse #iteration from checkpoint filename. Valid format is 'ckpt-<#iter>.pt'")
 
     def train(self):
         cfg_d = self.cfg.DATASET
@@ -188,11 +202,9 @@ class Trainer():
 
         digits_length = len(str(cfg_t.iteration))
         ema_beta = 0.5 ** (self.batch_gpu * self.num_gpus / (10 * 1000))
-        mean_path_length = 0
         stats_keys = ['g', 'd', 'real_score', 'fake_score', 'mean_path', 'r1', 'path', 'path_length']
         stats = OrderedDict((k, torch.tensor(0.0, dtype=torch.float, device=self.device)) for k in stats_keys)
         fids = None
-        ada_p = 0.0
         if cfg_d.ADA and (cfg_d.ADA_target) > 0:
             ada_moments = torch.zeros([2], device=self.device)  # [num_scalars, sum_of_scalars]
             ada_sign = torch.tensor(0.0, dtype=torch.float, device=self.device)
@@ -284,7 +296,7 @@ class Trainer():
 
                     fake_face, _ = torch.split(fake_imgs, [3, 3], dim=1)
                     # PPL regularization only on face
-                    path_loss, mean_path_length, path_lengths = path_regularize(fake_face, ws[0], mean_path_length)
+                    path_loss, self.mean_path_length, path_lengths = path_regularize(fake_face, ws[0], self.mean_path_length)
                     weighted_path_loss = cfg_t.path_reg_gain * cfg_t.Greg_every * path_loss
 
                     if cfg_t.path_bs_shrink:
@@ -296,9 +308,9 @@ class Trainer():
 
                 stats['path'] = path_loss.detach()
                 stats['path_length'] = path_lengths.mean().detach()
-                stats['mean_path'] = mean_path_length.detach()
+                stats['mean_path'] = self.mean_path_length.detach()
 
-            accumulate(self.g_ema, g_module, ema_beta)
+            ema(self.g_ema, g_module, ema_beta)
 
             # Execute ADA heuristic.
             if cfg_d.ADA and (cfg_d.ADA_target) > 0 and (i % cfg_d.ADA_interval == 0):
@@ -307,7 +319,7 @@ class Trainer():
                 ada_sign = (ada_moments[1] / ada_moments[0]).cpu().numpy()
                 adjust = np.sign(ada_sign - cfg_d.ADA_target) * (self.batch_gpu * self.num_gpus * cfg_d.ADA_interval) / (cfg_d.ADA_kimg * 1000)
                 self.augment_pipe.p.copy_((self.augment_pipe.p + adjust).max(constant(0, device=self.device)))
-                ada_p = self.augment_pipe.p.item()
+                self.ada_p = self.augment_pipe.p.item()
                 ada_moments = torch.zeros_like(ada_moments)
 
             if self.fid_tracker is not None and (i == 0 or (i + 1) % self.cfg.EVAL.FID.every == 0):
@@ -323,7 +335,7 @@ class Trainer():
 
             if self.local_rank == 0:
                 reduced_stats = {k: (v / self.num_gpus).item() for k, v in zip(stats.keys(), losses[0])}
-                reduced_stats['ada_p'] = ada_p
+                reduced_stats['ada_p'] = self.ada_p
 
                 if i == 0 or (i + 1) % cfg_t.sample_every == 0:
                     sample_iter = 'init' if i == 0 else str(i + 1).zfill(digits_length)
@@ -389,7 +401,7 @@ class Trainer():
         override(sample_cfg.kwargs, dict(sample=True))
         sample_ds = get_dataset(sample_cfg, split='all')
         sample = misc.EasyDict()
-        
+
         loader = torch.utils.data.DataLoader(sample_ds, batch_size=self.n_sample, shuffle=False)
         sample.vis_kp, sample.heatmaps = [x.to(self.device) for x in next(iter(loader))]
         sample.z = torch.randn(self.n_sample, self.z_dim, device=self.device)
@@ -422,9 +434,13 @@ class Trainer():
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(prog='torch.distributed.launch')
-    parser.add_argument('-c', '--cfg', help="path to the configuration file", metavar='PATH')
-    parser.add_argument('-o', '--out_dir', metavar='PATH',
-                        help="path to output directory. If not set, auto. set to subdirectory of outdir in configuration")
+    parser.add_argument('--cfg', metavar='FILE', help="path to the config file")
+    parser.add_argument(
+        '--out_dir',
+        metavar='PATH',
+        help="Path to output directory. If not given, it will automatically "
+        "assign a subdirectory under output directory defined by config"
+    )
     parser.add_argument('--local_rank', type=int, default=0, metavar='INT', help="Automatically given by %(prog)s")
     parser.add_argument('--seed', type=int, default=0, help="random seed")
     parser.add_argument('--nobench', default=True, action='store_false', dest='cudnn_benchmark', help="disable cuDNN benchmarking")
@@ -435,8 +451,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     cfg = get_cfg_defaults()
-    if args.cfg:
-        cfg.merge_from_file(args.cfg)
+    cfg.merge_from_file(args.cfg)
 
     args.num_gpus = torch.cuda.device_count()
     if args.num_gpus > 1:
@@ -451,36 +466,14 @@ if __name__ == '__main__':
     if args.num_gpus == 1 or args.local_rank == 0:
         args.wandb_id = 'noWandB'
         if args.wandb:
-            print(f"initialize wandb project: {Path(args.cfg).stem}")
-
-            run = wandb.init(
-                project=f'stylegan2-{Path(args.cfg).stem}',
-                config=convert_to_dict(cfg),
-                notes=cfg.description,
-                tags=['finetune'] if cfg.TRAIN.ckpt else None,
-            )
-
-            if cfg.name:
-                run.name = cfg.name
-
-            if run.resumed:
-                assert cfg.TRAIN.ckpt
-                try:
-                    start_iter = int(Path(cfg.TRAIN.ckpt).stem.split('-')[1])
-                except ValueError:
-                    raise UserError("Fail to parse #iteration from checkpoint filename. Valid format is 'ckpt-<#iter>.pt'")
-
-                if run.starting_step != start_iter:
-                    warnings.warn(f"non-increased step in log cal is not allowed in Wandb."
-                                  f"It will cause wandb skip logging until last step in previous run")
-
+            run = launch_wandb(cfg)
             args.wandb_id = run.id
 
-        misc.prepare_training(args, cfg)
+        misc.setup_outdir(args, cfg)
         shutil.copy(args.cfg, args.out_dir)
         print(cfg)
 
-    logger = misc.create_logger(**vars(args))
+    logger = misc.setup_logger(**vars(args))
 
     t = time()
     logger.info("initialize trainer...")

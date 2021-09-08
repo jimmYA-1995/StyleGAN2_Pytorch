@@ -1,9 +1,6 @@
 from yacs.config import CfgNode as CN
 
 
-_VALID_TYPES = {tuple, list, str, int, float, bool}
-
-# Default configuration. Overriden by experiments/<something>.yml with `CfgNode.merge_from_file`
 _C = CN()
 _C.name = ''
 _C.description = ''
@@ -100,25 +97,26 @@ def get_cfg_defaults():
     """ return local variable use pattern and link some config. together """
 
     cfg = _C.clone()
+    # link relate config & check
     cfg.DATASET.resolution = cfg.resolution
     cfg.DATASET.batch_size = cfg.TRAIN.batch_gpu
 
     return cfg
 
 
-# legacy. It seems we can directly unpacking cfgNode to function
 def convert_to_dict(cfg_node, key_list=[]):
     """ Convert a config node to dictionary """
+    _VALID_TYPES = {tuple, list, str, int, float, bool}
     if not isinstance(cfg_node, CN):
         if type(cfg_node) not in _VALID_TYPES:
             print("Key {} with value {} is not a valid type; valid types: {}".format(
                 ".".join(key_list), type(cfg_node), _VALID_TYPES), )
         return cfg_node
-    else:
-        cfg_dict = dict(cfg_node)
-        for k, v in cfg_dict.items():
-            cfg_dict[k] = convert_to_dict(v, key_list + [k])
-        return cfg_dict
+
+    cfg_dict = dict(cfg_node)
+    for k, v in cfg_dict.items():
+        cfg_dict[k] = convert_to_dict(v, key_list + [k])
+    return cfg_dict
 
 
 def override(cfg: CN, item: dict, copy: bool = False) -> CN:
@@ -133,4 +131,3 @@ def override(cfg: CN, item: dict, copy: bool = False) -> CN:
 
     if copy:
         return cfg
-    return None
